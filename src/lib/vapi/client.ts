@@ -1,0 +1,347 @@
+/**
+ * Vapi API Client
+ * Documentation: https://docs.vapi.ai/
+ */
+
+const VAPI_API_URL = "https://api.vapi.ai";
+
+export interface VapiAssistant {
+  id: string;
+  orgId: string;
+  name: string;
+  model: {
+    provider: string;
+    model: string;
+    systemPrompt: string;
+    temperature?: number;
+  };
+  voice: {
+    provider: string;
+    voiceId: string;
+  };
+  firstMessage: string;
+  transcriber?: {
+    provider: string;
+    model?: string;
+    language?: string;
+  };
+  serverUrl?: string;
+  serverUrlSecret?: string;
+  endCallFunctionEnabled?: boolean;
+  recordingEnabled?: boolean;
+  hipaaEnabled?: boolean;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VapiPhoneNumber {
+  id: string;
+  orgId: string;
+  number: string;
+  provider: string;
+  assistantId?: string;
+  fallbackDestination?: {
+    type: string;
+    number?: string;
+    sipUri?: string;
+  };
+  name?: string;
+  credentialId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VapiCall {
+  id: string;
+  orgId: string;
+  assistantId?: string;
+  phoneNumberId?: string;
+  type: "inbound" | "outbound" | "webCall";
+  status: "queued" | "ringing" | "in-progress" | "forwarding" | "ended";
+  endedReason?: string;
+  startedAt?: string;
+  endedAt?: string;
+  transcript?: string;
+  recordingUrl?: string;
+  summary?: string;
+  cost?: number;
+  messages?: Array<{
+    role: string;
+    content: string;
+    time: number;
+  }>;
+  analysis?: {
+    summary?: string;
+    structuredData?: Record<string, unknown>;
+    successEvaluation?: string;
+  };
+  customer?: {
+    number?: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAssistantRequest {
+  name: string;
+  model: {
+    provider: string;
+    model: string;
+    systemPrompt: string;
+    temperature?: number;
+  };
+  voice: {
+    provider: string;
+    voiceId: string;
+  };
+  firstMessage: string;
+  transcriber?: {
+    provider: string;
+    model?: string;
+    language?: string;
+  };
+  serverUrl?: string;
+  serverUrlSecret?: string;
+  endCallFunctionEnabled?: boolean;
+  recordingEnabled?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface UpdateAssistantRequest {
+  name?: string;
+  model?: {
+    provider?: string;
+    model?: string;
+    systemPrompt?: string;
+    temperature?: number;
+  };
+  voice?: {
+    provider?: string;
+    voiceId?: string;
+  };
+  firstMessage?: string;
+  transcriber?: {
+    provider?: string;
+    model?: string;
+    language?: string;
+  };
+  serverUrl?: string;
+  serverUrlSecret?: string;
+  endCallFunctionEnabled?: boolean;
+  recordingEnabled?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BuyPhoneNumberRequest {
+  areaCode?: string;
+  numberDesiredCountry?: string;
+  assistantId?: string;
+  name?: string;
+}
+
+export interface SearchPhoneNumbersRequest {
+  areaCode?: string;
+  country?: string;
+  limit?: number;
+}
+
+export interface CreateCallRequest {
+  assistantId?: string;
+  phoneNumberId?: string;
+  customer: {
+    number: string;
+    name?: string;
+  };
+  assistantOverrides?: Partial<CreateAssistantRequest>;
+}
+
+class VapiError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+    public body?: unknown
+  ) {
+    super(message);
+    this.name = "VapiError";
+  }
+}
+
+export class VapiClient {
+  private apiKey: string;
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || process.env.VAPI_API_KEY!;
+    if (!this.apiKey) {
+      throw new Error("VAPI_API_KEY is required");
+    }
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<T> {
+    const url = `${VAPI_API_URL}${path}`;
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.apiKey}`,
+      "Content-Type": "application/json",
+    };
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new VapiError(
+        data?.message || `Request failed with status ${response.status}`,
+        response.status,
+        data
+      );
+    }
+
+    return data;
+  }
+
+  // ============================================
+  // ASSISTANT METHODS
+  // ============================================
+
+  async createAssistant(data: CreateAssistantRequest): Promise<VapiAssistant> {
+    return this.request<VapiAssistant>("POST", "/assistant", data);
+  }
+
+  async getAssistant(assistantId: string): Promise<VapiAssistant> {
+    return this.request<VapiAssistant>("GET", `/assistant/${assistantId}`);
+  }
+
+  async updateAssistant(
+    assistantId: string,
+    data: UpdateAssistantRequest
+  ): Promise<VapiAssistant> {
+    return this.request<VapiAssistant>(
+      "PATCH",
+      `/assistant/${assistantId}`,
+      data
+    );
+  }
+
+  async deleteAssistant(assistantId: string): Promise<void> {
+    await this.request<void>("DELETE", `/assistant/${assistantId}`);
+  }
+
+  async listAssistants(): Promise<VapiAssistant[]> {
+    return this.request<VapiAssistant[]>("GET", "/assistant");
+  }
+
+  // ============================================
+  // PHONE NUMBER METHODS
+  // ============================================
+
+  async searchPhoneNumbers(
+    params: SearchPhoneNumbersRequest
+  ): Promise<{ number: string; locality?: string; region?: string }[]> {
+    const queryParams = new URLSearchParams();
+    if (params.areaCode) queryParams.set("areaCode", params.areaCode);
+    if (params.country) queryParams.set("country", params.country);
+    if (params.limit) queryParams.set("limit", params.limit.toString());
+
+    return this.request<{ number: string; locality?: string; region?: string }[]>(
+      "GET",
+      `/phone-number/search?${queryParams.toString()}`
+    );
+  }
+
+  async buyPhoneNumber(data: BuyPhoneNumberRequest): Promise<VapiPhoneNumber> {
+    return this.request<VapiPhoneNumber>("POST", "/phone-number", data);
+  }
+
+  async getPhoneNumber(phoneNumberId: string): Promise<VapiPhoneNumber> {
+    return this.request<VapiPhoneNumber>("GET", `/phone-number/${phoneNumberId}`);
+  }
+
+  async updatePhoneNumber(
+    phoneNumberId: string,
+    data: { assistantId?: string; name?: string }
+  ): Promise<VapiPhoneNumber> {
+    return this.request<VapiPhoneNumber>(
+      "PATCH",
+      `/phone-number/${phoneNumberId}`,
+      data
+    );
+  }
+
+  async deletePhoneNumber(phoneNumberId: string): Promise<void> {
+    await this.request<void>("DELETE", `/phone-number/${phoneNumberId}`);
+  }
+
+  async listPhoneNumbers(): Promise<VapiPhoneNumber[]> {
+    return this.request<VapiPhoneNumber[]>("GET", "/phone-number");
+  }
+
+  // ============================================
+  // CALL METHODS
+  // ============================================
+
+  async createCall(data: CreateCallRequest): Promise<VapiCall> {
+    return this.request<VapiCall>("POST", "/call", data);
+  }
+
+  async getCall(callId: string): Promise<VapiCall> {
+    return this.request<VapiCall>("GET", `/call/${callId}`);
+  }
+
+  async listCalls(params?: {
+    assistantId?: string;
+    phoneNumberId?: string;
+    limit?: number;
+  }): Promise<VapiCall[]> {
+    const queryParams = new URLSearchParams();
+    if (params?.assistantId) queryParams.set("assistantId", params.assistantId);
+    if (params?.phoneNumberId)
+      queryParams.set("phoneNumberId", params.phoneNumberId);
+    if (params?.limit) queryParams.set("limit", params.limit.toString());
+
+    const queryString = queryParams.toString();
+    return this.request<VapiCall[]>(
+      "GET",
+      `/call${queryString ? `?${queryString}` : ""}`
+    );
+  }
+
+  async endCall(callId: string): Promise<void> {
+    await this.request<void>("POST", `/call/${callId}/stop`);
+  }
+
+  // ============================================
+  // WEB CALL METHODS (for test calls in browser)
+  // ============================================
+
+  async createWebCall(data: {
+    assistantId?: string;
+    assistant?: CreateAssistantRequest;
+    assistantOverrides?: Partial<CreateAssistantRequest>;
+  }): Promise<{ token: string; callId: string }> {
+    return this.request<{ token: string; callId: string }>(
+      "POST",
+      "/call/web",
+      data
+    );
+  }
+}
+
+// Singleton instance
+let vapiClient: VapiClient | null = null;
+
+export function getVapiClient(): VapiClient {
+  if (!vapiClient) {
+    vapiClient = new VapiClient();
+  }
+  return vapiClient;
+}
+
+export { VapiError };
