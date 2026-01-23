@@ -1,0 +1,454 @@
+/**
+ * Cal.com API Client
+ *
+ * Handles integration with Cal.com for appointment booking:
+ * - OAuth flow for connecting accounts
+ * - Fetching event types and availability
+ * - Creating and managing bookings
+ */
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
+
+// Cal.com API base URL
+const CAL_COM_API_BASE = "https://api.cal.com/v2";
+
+export interface CalComEventType {
+  id: number;
+  slug: string;
+  title: string;
+  description: string | null;
+  length: number; // duration in minutes
+  hidden: boolean;
+}
+
+export interface CalComAvailability {
+  date: string;
+  slots: {
+    time: string;
+    attendees?: number;
+  }[];
+}
+
+export interface CalComBooking {
+  id: number;
+  uid: string;
+  title: string;
+  startTime: string;
+  endTime: string;
+  status: string;
+  attendees: {
+    name: string;
+    email: string;
+  }[];
+}
+
+export interface BookingRequest {
+  eventTypeId: number;
+  start: string; // ISO datetime
+  name: string;
+  email: string;
+  phone?: string;
+  notes?: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Get calendar integration settings for an organization
+ */
+export async function getCalendarIntegration(organizationId: string, assistantId?: string) {
+  const supabase = createAdminClient();
+
+  let query = (supabase as any)
+    .from("calendar_integrations")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .eq("provider", "cal_com")
+    .eq("is_active", true);
+
+  if (assistantId) {
+    query = query.eq("assistant_id", assistantId);
+  }
+
+  const { data, error } = await query.single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data;
+}
+
+/**
+ * Save calendar integration
+ */
+export async function saveCalendarIntegration(
+  organizationId: string,
+  data: {
+    assistantId?: string;
+    apiKey: string;
+    eventTypeId?: string;
+    bookingUrl?: string;
+    settings?: Record<string, any>;
+  }
+) {
+  const supabase = createAdminClient();
+
+  // Check if integration already exists
+  const { data: existing } = await (supabase as any)
+    .from("calendar_integrations")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("provider", "cal_com")
+    .single();
+
+  // Encrypt the API key before storing
+  const encryptedApiKey = safeEncrypt(data.apiKey);
+
+  if (existing) {
+    // Update existing
+    const { error } = await (supabase as any)
+      .from("calendar_integrations")
+      .update({
+        assistant_id: data.assistantId || null,
+        access_token: encryptedApiKey,
+        calendar_id: data.eventTypeId || null,
+        booking_url: data.bookingUrl || null,
+        settings: data.settings || {},
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id);
+
+    return !error;
+  } else {
+    // Insert new
+    const { error } = await (supabase as any)
+      .from("calendar_integrations")
+      .insert({
+        organization_id: organizationId,
+        assistant_id: data.assistantId || null,
+        provider: "cal_com",
+        access_token: encryptedApiKey,
+        calendar_id: data.eventTypeId || null,
+        booking_url: data.bookingUrl || null,
+        settings: data.settings || {},
+        is_active: true,
+      });
+
+    return !error;
+  }
+}
+
+/**
+ * Delete calendar integration
+ */
+export async function deleteCalendarIntegration(organizationId: string) {
+  const supabase = createAdminClient();
+
+  const { error } = await (supabase as any)
+    .from("calendar_integrations")
+    .delete()
+    .eq("organization_id", organizationId)
+    .eq("provider", "cal_com");
+
+  return !error;
+}
+
+/**
+ * Cal.com API client class
+ */
+export class CalComClient {
+  private apiKey: string;
+
+  constructor(apiKey: string) {
+    this.apiKey = apiKey;
+  }
+
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${CAL_COM_API_BASE}${endpoint}`;
+
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "cal-api-version": "2024-08-13",
+        Authorization: `Bearer ${this.apiKey}`,
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Cal.com API error: ${response.status} - ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Get the current user (to verify API key works)
+   */
+  async getMe() {
+    return this.request<{ status: string; data: { id: number; username: string; email: string } }>("/me");
+  }
+
+  /**
+   * Get event types (appointment types)
+   */
+  async getEventTypes(): Promise<CalComEventType[]> {
+    const response = await this.request<{ status: string; data: CalComEventType[] }>("/event-types");
+    return response.data || [];
+  }
+
+  /**
+   * Get available slots for a specific date and event type
+   */
+  async getAvailability(params: {
+    eventTypeId: number;
+    startTime: string; // ISO date
+    endTime: string; // ISO date
+  }): Promise<CalComAvailability[]> {
+    const query = new URLSearchParams({
+      eventTypeId: params.eventTypeId.toString(),
+      startTime: params.startTime,
+      endTime: params.endTime,
+    });
+
+    const response = await this.request<{ status: string; data: { slots: Record<string, { time: string }[]> } }>(
+      `/slots?${query.toString()}`
+    );
+
+    // Transform the response into our format
+    const slots = response.data?.slots || {};
+    return Object.entries(slots).map(([date, times]) => ({
+      date,
+      slots: times.map((t) => ({ time: t.time })),
+    }));
+  }
+
+  /**
+   * Create a booking
+   */
+  async createBooking(booking: BookingRequest): Promise<CalComBooking> {
+    const response = await this.request<{ status: string; data: CalComBooking }>("/bookings", {
+      method: "POST",
+      body: JSON.stringify({
+        eventTypeId: booking.eventTypeId,
+        start: booking.start,
+        attendee: {
+          name: booking.name,
+          email: booking.email,
+          phoneNumber: booking.phone,
+        },
+        notes: booking.notes,
+        metadata: booking.metadata,
+      }),
+    });
+
+    return response.data;
+  }
+
+  /**
+   * Cancel a booking
+   */
+  async cancelBooking(bookingId: number, reason?: string): Promise<boolean> {
+    await this.request(`/bookings/${bookingId}/cancel`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        cancellationReason: reason || "Cancelled by user",
+      }),
+    });
+
+    return true;
+  }
+
+  /**
+   * Reschedule a booking
+   */
+  async rescheduleBooking(
+    bookingUid: string,
+    newStart: string
+  ): Promise<CalComBooking> {
+    const response = await this.request<{ status: string; data: CalComBooking }>(
+      `/bookings/${bookingUid}/reschedule`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          start: newStart,
+        }),
+      }
+    );
+
+    return response.data;
+  }
+}
+
+/**
+ * Get a Cal.com client for an organization
+ */
+export async function getCalComClient(
+  organizationId: string,
+  assistantId?: string
+): Promise<CalComClient | null> {
+  const integration = await getCalendarIntegration(organizationId, assistantId);
+
+  if (!integration || !integration.access_token) {
+    return null;
+  }
+
+  // Decrypt the API key before use
+  const apiKey = safeDecrypt(integration.access_token);
+  if (!apiKey) {
+    console.error("Failed to decrypt Cal.com API key for organization:", organizationId);
+    return null;
+  }
+
+  return new CalComClient(apiKey);
+}
+
+/**
+ * Vapi tool definitions for calendar booking
+ */
+export const calendarTools = {
+  checkAvailability: {
+    type: "function" as const,
+    function: {
+      name: "check_availability",
+      description: "Check available appointment slots for a specific date. Use this when a caller wants to schedule an appointment.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          date: {
+            type: "string",
+            description: "Date to check availability for, in YYYY-MM-DD format",
+          },
+          event_type: {
+            type: "string",
+            description: "Type of appointment (optional, uses default if not specified)",
+          },
+        },
+        required: ["date"],
+      },
+    },
+  },
+
+  bookAppointment: {
+    type: "function" as const,
+    function: {
+      name: "book_appointment",
+      description: "Book an appointment for the caller. Collect their name, phone, and preferred time first.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          datetime: {
+            type: "string",
+            description: "The appointment date and time in ISO format (e.g., 2024-01-15T10:00:00)",
+          },
+          name: {
+            type: "string",
+            description: "The caller's full name",
+          },
+          email: {
+            type: "string",
+            description: "The caller's email address (optional)",
+          },
+          phone: {
+            type: "string",
+            description: "The caller's phone number",
+          },
+          notes: {
+            type: "string",
+            description: "Any additional notes or reason for the appointment",
+          },
+        },
+        required: ["datetime", "name", "phone"],
+      },
+    },
+  },
+
+  cancelAppointment: {
+    type: "function" as const,
+    function: {
+      name: "cancel_appointment",
+      description: "Cancel an existing appointment. Need the caller's phone number to find the booking.",
+      parameters: {
+        type: "object" as const,
+        properties: {
+          phone: {
+            type: "string",
+            description: "The caller's phone number to look up their appointment",
+          },
+          reason: {
+            type: "string",
+            description: "Reason for cancellation (optional)",
+          },
+        },
+        required: ["phone"],
+      },
+    },
+  },
+};
+
+/**
+ * Format availability slots for voice response
+ */
+export function formatAvailabilityForVoice(availability: CalComAvailability[]): string {
+  if (availability.length === 0 || availability.every((a) => a.slots.length === 0)) {
+    return "I'm sorry, there are no available appointments on that date. Would you like to check a different day?";
+  }
+
+  const parts: string[] = [];
+
+  for (const day of availability) {
+    if (day.slots.length === 0) continue;
+
+    // Format date nicely
+    const date = new Date(day.date);
+    const dateStr = date.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+
+    // Get first few slots
+    const slotsToShow = day.slots.slice(0, 5);
+    const timeStrings = slotsToShow.map((slot) => {
+      const time = new Date(slot.time);
+      return time.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      });
+    });
+
+    const moreSlots = day.slots.length > 5 ? ` and ${day.slots.length - 5} more` : "";
+
+    parts.push(`On ${dateStr}, I have openings at ${timeStrings.join(", ")}${moreSlots}`);
+  }
+
+  return parts.join(". ") + ". Which time works best for you?";
+}
+
+/**
+ * Format booking confirmation for voice response
+ */
+export function formatBookingConfirmation(booking: CalComBooking): string {
+  const startDate = new Date(booking.startTime);
+
+  const dateStr = startDate.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+
+  const timeStr = startDate.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  return `I've booked your appointment for ${dateStr} at ${timeStr}. You should receive a confirmation email shortly. Is there anything else I can help you with?`;
+}

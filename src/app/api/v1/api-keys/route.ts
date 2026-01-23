@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { generateApiKey } from "@/lib/utils";
 import { z } from "zod";
 import crypto from "crypto";
+import { withRateLimit } from "@/lib/security/rate-limiter";
 
 interface Membership {
   organization_id: string;
@@ -20,8 +21,17 @@ function hashApiKey(key: string): string {
 }
 
 // GET /api/v1/api-keys - List all API keys
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    // Rate limit
+    const { allowed, headers } = withRateLimit(request, "/api/v1/api-keys", "standard");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: "Too many requests" },
+        { status: 429, headers }
+      );
+    }
+
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
@@ -62,6 +72,15 @@ export async function GET() {
 // POST /api/v1/api-keys - Create a new API key
 export async function POST(request: Request) {
   try {
+    // Rate limit - auth-related operation
+    const { allowed, headers } = withRateLimit(request, "/api/v1/api-keys", "auth");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: "Too many requests" },
+        { status: 429, headers }
+      );
+    }
+
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 

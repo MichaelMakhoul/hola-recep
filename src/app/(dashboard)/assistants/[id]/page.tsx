@@ -1,0 +1,132 @@
+import { Metadata } from "next";
+import { notFound, redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { AssistantBuilder } from "./assistant-builder";
+
+export const metadata: Metadata = {
+  title: "Edit Assistant | Hola Recep",
+  description: "Configure your AI receptionist",
+};
+
+interface Assistant {
+  id: string;
+  name: string;
+  system_prompt: string;
+  first_message: string;
+  voice_id: string;
+  voice_provider: string;
+  model: string;
+  model_provider: string;
+  is_active: boolean;
+  settings: Record<string, any>;
+  vapi_assistant_id: string | null;
+  created_at: string;
+  phone_numbers?: { id: string; phone_number: string }[];
+}
+
+interface TransferRule {
+  id: string;
+  name: string;
+  trigger_keywords: string[];
+  trigger_intent: string | null;
+  transfer_to_phone: string;
+  transfer_to_name: string | null;
+  announcement_message: string | null;
+  priority: number;
+  is_active: boolean;
+}
+
+interface KnowledgeBase {
+  id: string;
+  source_type: string;
+  source_url: string | null;
+  content: string;
+  is_active: boolean;
+}
+
+interface CalendarIntegration {
+  id: string;
+  provider: string;
+  calendar_id: string | null;
+  booking_url: string | null;
+  is_active: boolean;
+}
+
+export default async function AssistantDetailPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  // Get user's organization
+  const { data: membership } = await (supabase as any)
+    .from("org_members")
+    .select("organization_id")
+    .eq("user_id", user.id)
+    .single();
+
+  if (!membership) {
+    redirect("/onboarding");
+  }
+
+  const organizationId = membership.organization_id as string;
+
+  // Get the assistant with related data
+  const { data: assistant, error } = await (supabase as any)
+    .from("assistants")
+    .select(`
+      *,
+      phone_numbers (id, phone_number)
+    `)
+    .eq("id", id)
+    .eq("organization_id", organizationId)
+    .single() as { data: Assistant | null; error: any };
+
+  if (error || !assistant) {
+    notFound();
+  }
+
+  // Get transfer rules for this assistant
+  const { data: transferRules } = await (supabase as any)
+    .from("transfer_rules")
+    .select("*")
+    .eq("assistant_id", id)
+    .eq("organization_id", organizationId)
+    .order("priority", { ascending: false }) as { data: TransferRule[] | null };
+
+  // Get knowledge bases for this assistant
+  const { data: knowledgeBases } = await (supabase as any)
+    .from("knowledge_bases")
+    .select("id, source_type, source_url, content, is_active")
+    .eq("assistant_id", id)
+    .eq("organization_id", organizationId) as { data: KnowledgeBase[] | null };
+
+  // Get calendar integration
+  const { data: calendarIntegration } = await (supabase as any)
+    .from("calendar_integrations")
+    .select("id, provider, calendar_id, booking_url, is_active")
+    .eq("organization_id", organizationId)
+    .or(`assistant_id.eq.${id},assistant_id.is.null`)
+    .eq("is_active", true)
+    .single() as { data: CalendarIntegration | null };
+
+  return (
+    <AssistantBuilder
+      assistant={assistant}
+      organizationId={organizationId}
+      transferRules={transferRules || []}
+      knowledgeBases={knowledgeBases || []}
+      calendarIntegration={calendarIntegration}
+    />
+  );
+}
