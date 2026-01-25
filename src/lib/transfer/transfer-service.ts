@@ -97,7 +97,12 @@ export async function getTransferRules(
     .eq("is_active", true)
     .order("priority", { ascending: false });
 
-  if (error || !data) {
+  if (error) {
+    console.error("Failed to fetch transfer rules:", error);
+    throw new Error(`Failed to fetch transfer rules: ${error.message}`);
+  }
+
+  if (!data) {
     return [];
   }
 
@@ -221,8 +226,8 @@ export async function processTransfer(
     rule.announcementMessage ||
     generateDefaultAnnouncement(request, rule);
 
-  // Log the transfer attempt
-  await (supabase as any)
+  // Log the transfer attempt (non-critical, don't block transfer on logging failure)
+  const { error: logError } = await (supabase as any)
     .from("calls")
     .update({
       action_taken: "transferred",
@@ -233,10 +238,12 @@ export async function processTransfer(
         transfer_summary: request.summary,
       },
     })
-    .eq("id", request.callId)
-    .catch((err: Error) => {
-      console.error("Failed to log transfer:", err);
-    });
+    .eq("id", request.callId);
+
+  if (logError) {
+    // Log but don't throw - transfer logging is non-critical
+    console.error("Failed to log transfer (non-critical):", logError.message);
+  }
 
   return {
     success: true,
@@ -304,9 +311,13 @@ export async function createTransferRule(
     .select()
     .single();
 
-  if (error || !rule) {
+  if (error) {
     console.error("Failed to create transfer rule:", error);
-    return null;
+    throw new Error(`Failed to create transfer rule: ${error.message}`);
+  }
+
+  if (!rule) {
+    throw new Error("Failed to create transfer rule: No data returned");
   }
 
   return {
@@ -364,7 +375,12 @@ export async function updateTransferRule(
     .eq("id", ruleId)
     .eq("organization_id", organizationId);
 
-  return !error;
+  if (error) {
+    console.error("Failed to update transfer rule:", error);
+    throw new Error(`Failed to update transfer rule: ${error.message}`);
+  }
+
+  return true;
 }
 
 /**
@@ -382,7 +398,12 @@ export async function deleteTransferRule(
     .eq("id", ruleId)
     .eq("organization_id", organizationId);
 
-  return !error;
+  if (error) {
+    console.error("Failed to delete transfer rule:", error);
+    throw new Error(`Failed to delete transfer rule: ${error.message}`);
+  }
+
+  return true;
 }
 
 /**

@@ -164,6 +164,18 @@ export function sanitizeString(str: string, maxLength: number = 1000): string {
 }
 
 /**
+ * Validate ElevenLabs voice ID format
+ * ElevenLabs voice IDs are alphanumeric strings (e.g., "EXAVITQu4vr4xnSDxMaL")
+ * Also allows common voice name aliases (e.g., "rachel", "drew")
+ */
+export const VOICE_ID_REGEX = /^[a-zA-Z0-9_-]{1,50}$/;
+
+export function isValidVoiceId(voiceId: string): boolean {
+  if (!voiceId || typeof voiceId !== "string") return false;
+  return VOICE_ID_REGEX.test(voiceId);
+}
+
+/**
  * Verify a webhook request with secret
  * Always requires the secret to be configured
  */

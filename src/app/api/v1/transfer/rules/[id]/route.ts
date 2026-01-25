@@ -4,6 +4,7 @@ import {
   updateTransferRule,
   deleteTransferRule,
 } from "@/lib/transfer/transfer-service";
+import { isValidUUID } from "@/lib/security/validation";
 
 /**
  * PATCH /api/v1/transfer/rules/:id
@@ -16,6 +17,15 @@ export async function PATCH(
 ) {
   try {
     const { id: ruleId } = await params;
+
+    // Validate UUID format
+    if (!isValidUUID(ruleId)) {
+      return NextResponse.json(
+        { error: "Invalid rule ID format" },
+        { status: 400 }
+      );
+    }
+
     const supabase = await createClient();
 
     // Check authentication
@@ -72,7 +82,7 @@ export async function PATCH(
     } = body;
 
     // Update the rule
-    const success = await updateTransferRule(ruleId, organizationId, {
+    await updateTransferRule(ruleId, organizationId, {
       name,
       triggerKeywords,
       triggerIntent,
@@ -83,18 +93,12 @@ export async function PATCH(
       isActive,
     });
 
-    if (!success) {
-      return NextResponse.json(
-        { error: "Failed to update transfer rule" },
-        { status: 500 }
-      );
-    }
-
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Update transfer rule error:", error);
+    const message = error instanceof Error ? error.message : "Failed to update transfer rule";
     return NextResponse.json(
-      { error: "Failed to update transfer rule" },
+      { error: message },
       { status: 500 }
     );
   }
@@ -111,6 +115,15 @@ export async function DELETE(
 ) {
   try {
     const { id: ruleId } = await params;
+
+    // Validate UUID format
+    if (!isValidUUID(ruleId)) {
+      return NextResponse.json(
+        { error: "Invalid rule ID format" },
+        { status: 400 }
+      );
+    }
+
     const supabase = await createClient();
 
     // Check authentication
@@ -140,20 +153,14 @@ export async function DELETE(
     const organizationId = membership.organization_id as string;
 
     // Delete the rule
-    const success = await deleteTransferRule(ruleId, organizationId);
-
-    if (!success) {
-      return NextResponse.json(
-        { error: "Failed to delete transfer rule" },
-        { status: 500 }
-      );
-    }
+    await deleteTransferRule(ruleId, organizationId);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Delete transfer rule error:", error);
+    const message = error instanceof Error ? error.message : "Failed to delete transfer rule";
     return NextResponse.json(
-      { error: "Failed to delete transfer rule" },
+      { error: message },
       { status: 500 }
     );
   }

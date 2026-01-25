@@ -4,6 +4,7 @@ import {
   getTransferRules,
   createTransferRule,
 } from "@/lib/transfer/transfer-service";
+import { isValidUUID } from "@/lib/security/validation";
 
 /**
  * GET /api/v1/transfer/rules
@@ -54,6 +55,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Validate UUID format
+    if (!isValidUUID(assistantId)) {
+      return NextResponse.json(
+        { error: "Invalid assistant ID format" },
+        { status: 400 }
+      );
+    }
+
     // Verify assistant belongs to organization
     const { data: assistant } = await (supabase as any)
       .from("assistants")
@@ -78,8 +87,9 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Get transfer rules error:", error);
+    const message = error instanceof Error ? error.message : "Failed to get transfer rules";
     return NextResponse.json(
-      { error: "Failed to get transfer rules" },
+      { error: message },
       { status: 500 }
     );
   }
@@ -150,6 +160,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate UUID format
+    if (!isValidUUID(assistantId)) {
+      return NextResponse.json(
+        { error: "Invalid assistant ID format" },
+        { status: 400 }
+      );
+    }
+
     if (!name) {
       return NextResponse.json(
         { error: "Rule name is required" },
@@ -190,21 +208,15 @@ export async function POST(request: NextRequest) {
       priority,
     });
 
-    if (!rule) {
-      return NextResponse.json(
-        { error: "Failed to create transfer rule" },
-        { status: 500 }
-      );
-    }
-
     return NextResponse.json({
       success: true,
       rule,
     });
   } catch (error) {
     console.error("Create transfer rule error:", error);
+    const message = error instanceof Error ? error.message : "Failed to create transfer rule";
     return NextResponse.json(
-      { error: "Failed to create transfer rule" },
+      { error: message },
       { status: 500 }
     );
   }

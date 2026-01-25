@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { isValidVoiceId } from "@/lib/security/validation";
 
 // Maximum text length to prevent abuse (ElevenLabs charges per character)
 const MAX_TEXT_LENGTH = 500;
@@ -31,6 +32,14 @@ export async function POST(request: Request) {
     if (!voiceId || !text) {
       return NextResponse.json(
         { error: "voiceId and text are required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate voice ID format to prevent injection
+    if (!isValidVoiceId(voiceId)) {
+      return NextResponse.json(
+        { error: "Invalid voice ID format" },
         { status: 400 }
       );
     }
