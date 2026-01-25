@@ -1,14 +1,44 @@
 import { NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { withRateLimit } from "@/lib/security/rate-limiter";
+
+// Maximum text length to prevent abuse (ElevenLabs charges per character)
+const MAX_TEXT_LENGTH = 500;
 
 // POST /api/v1/voice-preview - Generate voice preview using ElevenLabs
 export async function POST(request: Request) {
   try {
+    // Rate limit - voice preview is an expensive operation
+    const { allowed, headers } = withRateLimit(request, "/api/v1/voice-preview", "expensive");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please try again later." },
+        { status: 429, headers }
+      );
+    }
+
+    // Authentication check
+    const supabase = await createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     const { voiceId, text } = body;
 
     if (!voiceId || !text) {
       return NextResponse.json(
         { error: "voiceId and text are required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate text length to prevent API abuse
+    if (typeof text !== "string" || text.length > MAX_TEXT_LENGTH) {
+      return NextResponse.json(
+        { error: `Text must be a string with maximum ${MAX_TEXT_LENGTH} characters` },
         { status: 400 }
       );
     }
