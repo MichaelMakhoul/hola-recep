@@ -24,11 +24,15 @@ export function formatCurrency(cents: number): string {
   }).format(cents / 100);
 }
 
+/**
+ * Generate a cryptographically secure API key
+ * Uses crypto.randomBytes() instead of Math.random() for security
+ */
 export function generateApiKey(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let result = "hr_";
-  for (let i = 0; i < 32; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  // Use dynamic import to avoid issues in browser environments
+  const crypto = require("crypto");
+  const prefix = "hr_";
+  // Generate 24 random bytes = 32 base64url characters
+  const randomBytes = crypto.randomBytes(24);
+  return prefix + randomBytes.toString("base64url");
 }

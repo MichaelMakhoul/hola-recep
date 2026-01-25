@@ -40,6 +40,15 @@ interface AvailableNumber {
   region?: string;
 }
 
+// Known available area codes from Vapi (updated periodically)
+const SUGGESTED_AREA_CODES = [
+  { code: "651", location: "St. Paul, MN" },
+  { code: "539", location: "Tulsa, OK" },
+  { code: "704", location: "Charlotte, NC" },
+  { code: "469", location: "Dallas, TX" },
+  { code: "725", location: "Las Vegas, NV" },
+];
+
 export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"search" | "select" | "confirm">("search");
@@ -50,6 +59,7 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
   const [selectedNumber, setSelectedNumber] = useState<AvailableNumber | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isBuying, setIsBuying] = useState(false);
+  const [buyError, setBuyError] = useState<string | null>(null);
   const router = useRouter();
   const { toast } = useToast();
 
@@ -92,6 +102,7 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
   const handleBuy = async () => {
     if (!selectedNumber) return;
     setIsBuying(true);
+    setBuyError(null);
 
     try {
       const response = await fetch("/api/v1/phone-numbers", {
@@ -106,7 +117,16 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to purchase phone number");
+        const errorMessage = error.error || "Failed to purchase phone number";
+
+        // Check if it's an area code availability error
+        if (errorMessage.includes("area code") || errorMessage.includes("not available")) {
+          setBuyError(errorMessage);
+          setStep("search"); // Go back to search to try different area code
+          return;
+        }
+
+        throw new Error(errorMessage);
       }
 
       toast({
@@ -135,6 +155,7 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
     setFriendlyName("");
     setAvailableNumbers([]);
     setSelectedNumber(null);
+    setBuyError(null);
   };
 
   return (
@@ -164,18 +185,41 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
 
         {step === "search" && (
           <div className="space-y-4 py-4">
+            {buyError && (
+              <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
+                {buyError}
+              </div>
+            )}
+
             <div className="space-y-2">
-              <Label htmlFor="areaCode">Area Code (optional)</Label>
+              <Label htmlFor="areaCode">Area Code</Label>
               <Input
                 id="areaCode"
-                placeholder="e.g., 415"
+                placeholder="e.g., 651"
                 value={areaCode}
                 onChange={(e) => setAreaCode(e.target.value)}
                 maxLength={3}
               />
-              <p className="text-xs text-muted-foreground">
-                Leave blank to search any available numbers
-              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Suggested area codes:</Label>
+              <div className="flex flex-wrap gap-2">
+                {SUGGESTED_AREA_CODES.map((ac) => (
+                  <button
+                    key={ac.code}
+                    type="button"
+                    onClick={() => setAreaCode(ac.code)}
+                    className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                      areaCode === ac.code
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted hover:bg-muted/80"
+                    }`}
+                  >
+                    {ac.code} ({ac.location})
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -236,12 +280,12 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
 
             <div className="space-y-2">
               <Label htmlFor="assistant">Assign to Assistant (optional)</Label>
-              <Select value={assistantId} onValueChange={setAssistantId}>
+              <Select value={assistantId || "none"} onValueChange={(v) => setAssistantId(v === "none" ? "" : v)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select an assistant" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">No assistant</SelectItem>
+                  <SelectItem value="none">No assistant</SelectItem>
                   {assistants.map((assistant) => (
                     <SelectItem key={assistant.id} value={assistant.id}>
                       {assistant.name}

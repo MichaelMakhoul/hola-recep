@@ -134,10 +134,14 @@ export interface UpdateAssistantRequest {
 }
 
 export interface BuyPhoneNumberRequest {
-  areaCode?: string;
-  numberDesiredCountry?: string;
+  provider?: "vapi" | "twilio" | "vonage" | "telnyx";
+  numberDesiredAreaCode?: string;
   assistantId?: string;
   name?: string;
+  // For non-vapi providers
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  number?: string;
 }
 
 export interface SearchPhoneNumbersRequest {
@@ -244,20 +248,34 @@ export class VapiClient {
 
   async searchPhoneNumbers(
     params: SearchPhoneNumbersRequest
-  ): Promise<{ number: string; locality?: string; region?: string }[]> {
-    const queryParams = new URLSearchParams();
-    if (params.areaCode) queryParams.set("areaCode", params.areaCode);
-    if (params.country) queryParams.set("country", params.country);
-    if (params.limit) queryParams.set("limit", params.limit.toString());
+  ): Promise<{ number: string; locality?: string; region?: string; areaCode?: string }[]> {
+    // Vapi doesn't have a search endpoint - return mock data showing available area codes
+    // Users will specify area code when buying, and Vapi will provision a number
+    const areaCode = params.areaCode || "415";
 
-    return this.request<{ number: string; locality?: string; region?: string }[]>(
-      "GET",
-      `/phone-number/search?${queryParams.toString()}`
-    );
+    // Return placeholder showing the area code is available for Vapi SIP numbers
+    return [
+      {
+        number: `+1${areaCode}XXXXXXX`,
+        locality: "Available",
+        region: params.country || "US",
+        areaCode
+      }
+    ];
   }
 
   async buyPhoneNumber(data: BuyPhoneNumberRequest): Promise<VapiPhoneNumber> {
-    return this.request<VapiPhoneNumber>("POST", "/phone-number", data);
+    // Default to Vapi's free SIP numbers
+    const requestData = {
+      provider: data.provider || "vapi",
+      numberDesiredAreaCode: data.numberDesiredAreaCode,
+      assistantId: data.assistantId,
+      name: data.name,
+      ...(data.twilioAccountSid && { twilioAccountSid: data.twilioAccountSid }),
+      ...(data.twilioAuthToken && { twilioAuthToken: data.twilioAuthToken }),
+      ...(data.number && { number: data.number }),
+    };
+    return this.request<VapiPhoneNumber>("POST", "/phone-number", requestData);
   }
 
   async getPhoneNumber(phoneNumberId: string): Promise<VapiPhoneNumber> {

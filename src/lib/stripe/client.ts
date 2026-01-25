@@ -11,75 +11,126 @@ export function getStripeClient(): Stripe {
   return stripeClient;
 }
 
-// Plan configurations
+// New call-based pricing model (SMB-first)
 export const PLANS = {
-  free: {
-    name: "Free",
-    price: 0,
-    minutes: 50,
-    assistants: 1,
-    phoneNumbers: 0,
-    stripePriceId: null,
-  },
   starter: {
     name: "Starter",
-    price: 4900, // cents
-    minutes: 500,
-    assistants: 3,
+    price: 4900, // $49/month
+    callsLimit: 100, // calls per month, not minutes
+    assistants: 1,
     phoneNumbers: 1,
+    calendarIntegration: false,
+    callTransfer: false,
+    prioritySupport: false,
+    trialDays: 14,
     stripePriceId: process.env.STRIPE_STARTER_PRICE_ID,
+    features: [
+      "100 calls/month",
+      "1 AI assistant",
+      "1 phone number",
+      "Call transcripts",
+      "Email notifications",
+    ],
   },
   professional: {
     name: "Professional",
-    price: 14900,
-    minutes: 2000,
+    price: 9900, // $99/month
+    callsLimit: 250,
+    assistants: 3,
+    phoneNumbers: 2,
+    calendarIntegration: true,
+    callTransfer: true,
+    prioritySupport: true,
+    trialDays: 14,
+    stripePriceId: process.env.STRIPE_PROFESSIONAL_PRICE_ID,
+    features: [
+      "250 calls/month",
+      "3 AI assistants",
+      "2 phone numbers",
+      "Calendar integration",
+      "Call transfers",
+      "Priority support",
+    ],
+  },
+  growth: {
+    name: "Growth",
+    price: 19900, // $199/month
+    callsLimit: -1, // unlimited
     assistants: 10,
     phoneNumbers: 5,
-    stripePriceId: process.env.STRIPE_PROFESSIONAL_PRICE_ID,
+    calendarIntegration: true,
+    callTransfer: true,
+    prioritySupport: true,
+    humanEscalation: true,
+    advancedAnalytics: true,
+    customVoice: true,
+    trialDays: 14,
+    stripePriceId: process.env.STRIPE_GROWTH_PRICE_ID,
+    features: [
+      "Unlimited calls",
+      "10 AI assistants",
+      "5 phone numbers",
+      "Human escalation option",
+      "Advanced analytics",
+      "Custom voice selection",
+      "White-glove onboarding",
+    ],
   },
-  business: {
-    name: "Business",
-    price: 34900,
-    minutes: 5000,
-    assistants: -1, // unlimited
-    phoneNumbers: 20,
-    stripePriceId: process.env.STRIPE_BUSINESS_PRICE_ID,
-  },
+  // Keep agency tiers for Phase 2
   agency_starter: {
     name: "Agency Starter",
     price: 19900,
-    minutes: 0, // pay per minute
+    callsLimit: 0, // pay per call
     assistants: -1,
     phoneNumbers: -1,
     subaccounts: 10,
-    ratePerMinute: 12, // cents
+    ratePerCall: 50, // cents per call
     stripePriceId: process.env.STRIPE_AGENCY_STARTER_PRICE_ID,
+    features: [
+      "Up to 10 client accounts",
+      "Unlimited assistants",
+      "White-label options",
+      "$0.50/call",
+    ],
   },
   agency_growth: {
     name: "Agency Growth",
     price: 49900,
-    minutes: 0,
+    callsLimit: 0,
     assistants: -1,
     phoneNumbers: -1,
     subaccounts: 50,
-    ratePerMinute: 9,
+    ratePerCall: 35,
     stripePriceId: process.env.STRIPE_AGENCY_GROWTH_PRICE_ID,
+    features: [
+      "Up to 50 client accounts",
+      "Unlimited assistants",
+      "Full white-label",
+      "$0.35/call",
+    ],
   },
   agency_scale: {
     name: "Agency Scale",
     price: 99900,
-    minutes: 0,
+    callsLimit: 0,
     assistants: -1,
     phoneNumbers: -1,
-    subaccounts: -1,
-    ratePerMinute: 7,
+    subaccounts: -1, // unlimited
+    ratePerCall: 25,
     stripePriceId: process.env.STRIPE_AGENCY_SCALE_PRICE_ID,
+    features: [
+      "Unlimited client accounts",
+      "Custom integrations",
+      "Dedicated support",
+      "$0.25/call",
+    ],
   },
 } as const;
 
 export type PlanType = keyof typeof PLANS;
 
-export const OVERAGE_RATE_CENTS = 15; // $0.15 per minute for SMB plans
+// No more per-minute overage - upgrade prompts instead
+export const CALL_THRESHOLD_WARNING = 0.8; // Warn at 80% usage
 
 export async function createCustomer(
   email: string,

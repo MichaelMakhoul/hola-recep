@@ -3,66 +3,101 @@
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/ui/use-toast";
-import { Check, CreditCard, Loader2 } from "lucide-react";
+import {
+  Check,
+  CreditCard,
+  Loader2,
+  AlertTriangle,
+  Phone,
+  Users,
+  Smartphone,
+  Calendar,
+  ArrowRight,
+  Headphones,
+  BarChart3,
+  Mic,
+} from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 
+// SMB-first call-based pricing plans
 const PLANS = [
-  {
-    id: "free",
-    name: "Free",
-    price: 0,
-    description: "Get started with basic features",
-    features: ["50 minutes/month", "1 AI assistant", "Test calls only", "Basic analytics"],
-    highlighted: false,
-  },
   {
     id: "starter",
     name: "Starter",
     price: 4900,
-    description: "Perfect for small businesses",
-    features: ["500 minutes/month", "3 AI assistants", "1 phone number", "Call transcripts", "Email support"],
+    description: "Perfect for getting started",
+    callsLimit: 100,
+    features: [
+      { text: "100 calls/month", icon: Phone },
+      { text: "1 AI assistant", icon: Users },
+      { text: "1 phone number", icon: Smartphone },
+      { text: "Call transcripts", icon: null },
+      { text: "Email notifications", icon: null },
+    ],
     highlighted: false,
   },
   {
     id: "professional",
     name: "Professional",
-    price: 14900,
+    price: 9900,
     description: "For growing businesses",
+    callsLimit: 250,
     features: [
-      "2,000 minutes/month",
-      "10 AI assistants",
-      "5 phone numbers",
-      "Call recordings",
-      "Priority support",
-      "API access",
+      { text: "250 calls/month", icon: Phone },
+      { text: "3 AI assistants", icon: Users },
+      { text: "2 phone numbers", icon: Smartphone },
+      { text: "Calendar integration", icon: Calendar },
+      { text: "Call transfers", icon: ArrowRight },
+      { text: "Priority support", icon: Headphones },
     ],
     highlighted: true,
   },
   {
-    id: "business",
-    name: "Business",
-    price: 34900,
-    description: "For large teams",
+    id: "growth",
+    name: "Growth",
+    price: 19900,
+    description: "For high-volume businesses",
+    callsLimit: -1, // unlimited
     features: [
-      "5,000 minutes/month",
-      "Unlimited assistants",
-      "20 phone numbers",
-      "Advanced analytics",
-      "Dedicated support",
-      "Custom integrations",
+      { text: "Unlimited calls", icon: Phone },
+      { text: "10 AI assistants", icon: Users },
+      { text: "5 phone numbers", icon: Smartphone },
+      { text: "Human escalation", icon: Headphones },
+      { text: "Advanced analytics", icon: BarChart3 },
+      { text: "Custom voice selection", icon: Mic },
+      { text: "White-glove onboarding", icon: null },
     ],
     highlighted: false,
   },
 ];
 
+interface Subscription {
+  id: string;
+  plan: string;
+  status: string;
+  calls_used: number;
+  calls_limit: number;
+  current_period_start: string;
+  current_period_end: string;
+  cancel_at_period_end: boolean;
+  trial_end: string | null;
+}
+
 function BillingContent() {
   const [currentPlan, setCurrentPlan] = useState<string | null>(null);
-  const [subscription, setSubscription] = useState<any>(null);
-  const [usageMinutes, setUsageMinutes] = useState(0);
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const searchParams = useSearchParams();
@@ -88,14 +123,16 @@ function BillingContent() {
   }, []);
 
   const loadBillingData = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) return;
 
-    const { data: membership } = await supabase
+    const { data: membership } = (await supabase
       .from("org_members")
       .select("organization_id")
       .eq("user_id", user.id)
-      .single() as { data: { organization_id: string } | null };
+      .single()) as { data: { organization_id: string } | null };
 
     if (!membership) return;
 
@@ -109,27 +146,16 @@ function BillingContent() {
       .single();
 
     if (sub) {
-      setSubscription(sub);
-      setCurrentPlan((sub as { plan_type: string }).plan_type);
+      setSubscription(sub as Subscription);
+      setCurrentPlan((sub as Subscription).plan);
     } else {
-      setCurrentPlan("free");
+      setCurrentPlan(null);
     }
-
-    // Get usage
-    const { data: usage } = await supabase
-      .from("usage_records")
-      .select("minutes_used")
-      .eq("organization_id", orgId)
-      .eq("reported_to_stripe", false) as { data: { minutes_used: number }[] | null };
-
-    const totalMinutes = usage?.reduce((sum, u) => sum + u.minutes_used, 0) || 0;
-    setUsageMinutes(Math.round(totalMinutes));
 
     setIsLoading(false);
   };
 
   const handleSubscribe = async (planId: string) => {
-    if (planId === "free") return;
     setLoadingPlan(planId);
 
     try {
@@ -150,7 +176,8 @@ function BillingContent() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to start checkout",
+        description:
+          error instanceof Error ? error.message : "Failed to start checkout",
       });
       setLoadingPlan(null);
     }
@@ -173,7 +200,10 @@ function BillingContent() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to open billing portal",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Failed to open billing portal",
       });
     }
   };
@@ -186,6 +216,18 @@ function BillingContent() {
     );
   }
 
+  // Calculate usage percentage
+  const usagePercentage =
+    subscription && subscription.calls_limit > 0
+      ? Math.round((subscription.calls_used / subscription.calls_limit) * 100)
+      : 0;
+  const isNearLimit = usagePercentage >= 80;
+  const isOverLimit =
+    subscription &&
+    subscription.calls_limit > 0 &&
+    subscription.calls_used >= subscription.calls_limit;
+  const isUnlimited = subscription?.calls_limit === -1;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -193,7 +235,7 @@ function BillingContent() {
         <div>
           <h1 className="text-2xl font-bold">Billing</h1>
           <p className="text-muted-foreground">
-            Manage your subscription and billing
+            Manage your subscription and usage
           </p>
         </div>
         {subscription && (
@@ -204,104 +246,244 @@ function BillingContent() {
         )}
       </div>
 
-      {/* Current Plan */}
+      {/* Current Plan & Usage */}
       {subscription && (
-        <Card>
+        <Card
+          className={
+            isNearLimit && !isUnlimited
+              ? "border-orange-300 dark:border-orange-700"
+              : ""
+          }
+        >
           <CardHeader>
-            <CardTitle>Current Plan</CardTitle>
-            <CardDescription>Your active subscription details</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Current Plan</CardTitle>
+                <CardDescription>Your active subscription</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                {subscription.cancel_at_period_end && (
+                  <Badge variant="destructive">Canceling</Badge>
+                )}
+                {subscription.trial_end &&
+                  new Date(subscription.trial_end) > new Date() && (
+                    <Badge variant="secondary">Trial</Badge>
+                  )}
+                <Badge
+                  variant={
+                    subscription.status === "active" ? "success" : "secondary"
+                  }
+                >
+                  {subscription.status}
+                </Badge>
+              </div>
+            </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-2xl font-bold capitalize">
-                  {subscription.plan_type.replace("_", " ")}
+                  {subscription.plan.replace("_", " ")}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {subscription.included_minutes} minutes included
+                  Renews{" "}
+                  {new Date(subscription.current_period_end).toLocaleDateString(
+                    "en-US",
+                    {
+                      month: "long",
+                      day: "numeric",
+                      year: "numeric",
+                    }
+                  )}
                 </p>
               </div>
-              <Badge variant={subscription.status === "active" ? "success" : "secondary"}>
-                {subscription.status}
-              </Badge>
             </div>
-            <div className="mt-4">
-              <p className="text-sm text-muted-foreground">
-                Usage this period: <span className="font-medium text-foreground">{usageMinutes}</span> / {subscription.included_minutes} minutes
-              </p>
-              <div className="mt-2 h-2 rounded-full bg-muted">
-                <div
-                  className="h-2 rounded-full bg-primary"
-                  style={{
-                    width: `${Math.min(100, (usageMinutes / subscription.included_minutes) * 100)}%`,
-                  }}
-                />
+
+            {/* Usage Section */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Calls this period</span>
+                <span className="font-medium">
+                  {subscription.calls_used}
+                  {isUnlimited ? "" : ` / ${subscription.calls_limit}`}
+                  {isUnlimited && (
+                    <span className="ml-1 text-muted-foreground">
+                      (unlimited)
+                    </span>
+                  )}
+                </span>
               </div>
+
+              {!isUnlimited && (
+                <Progress
+                  value={Math.min(usagePercentage, 100)}
+                  className={`h-2 ${
+                    isOverLimit
+                      ? "[&>div]:bg-red-500"
+                      : isNearLimit
+                        ? "[&>div]:bg-orange-500"
+                        : ""
+                  }`}
+                />
+              )}
+
+              {isOverLimit && (
+                <div className="flex items-center gap-2 rounded-md bg-red-50 dark:bg-red-950 p-3 text-sm text-red-700 dark:text-red-300">
+                  <AlertTriangle className="h-4 w-4" />
+                  <span>
+                    You've reached your call limit. Upgrade to continue
+                    receiving calls.
+                  </span>
+                </div>
+              )}
+
+              {isNearLimit && !isOverLimit && (
+                <div className="flex items-center gap-2 rounded-md bg-orange-50 dark:bg-orange-950 p-3 text-sm text-orange-700 dark:text-orange-300">
+                  <AlertTriangle className="h-4 w-4" />
+                  <span>
+                    You're approaching your call limit ({usagePercentage}%
+                    used). Consider upgrading.
+                  </span>
+                </div>
+              )}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* No subscription */}
+      {!subscription && (
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-10 text-center">
+            <Phone className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold">No Active Subscription</h3>
+            <p className="text-muted-foreground mt-1 max-w-sm">
+              Choose a plan below to start using AI-powered call handling for
+              your business.
+            </p>
           </CardContent>
         </Card>
       )}
 
       {/* Plans */}
       <div>
-        <h2 className="mb-4 text-lg font-semibold">Available Plans</h2>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {PLANS.map((plan) => (
-            <Card
-              key={plan.id}
-              className={plan.highlighted ? "border-primary shadow-md" : ""}
-            >
-              <CardHeader>
+        <h2 className="mb-4 text-lg font-semibold">
+          {subscription ? "Upgrade Your Plan" : "Choose a Plan"}
+        </h2>
+        <div className="grid gap-4 md:grid-cols-3">
+          {PLANS.map((plan) => {
+            const isCurrentPlan = currentPlan === plan.id;
+            const isDowngrade =
+              subscription &&
+              PLANS.findIndex((p) => p.id === subscription.plan) >
+                PLANS.findIndex((p) => p.id === plan.id);
+
+            return (
+              <Card
+                key={plan.id}
+                className={`relative ${plan.highlighted ? "border-primary shadow-lg" : ""} ${isCurrentPlan ? "bg-muted/50" : ""}`}
+              >
                 {plan.highlighted && (
-                  <Badge className="mb-2 w-fit">Most Popular</Badge>
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2">
+                    <Badge className="bg-primary">Most Popular</Badge>
+                  </div>
                 )}
-                <CardTitle>{plan.name}</CardTitle>
-                <CardDescription>{plan.description}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="mb-4">
-                  <span className="text-3xl font-bold">
-                    {plan.price === 0 ? "Free" : formatCurrency(plan.price)}
-                  </span>
-                  {plan.price > 0 && (
+                <CardHeader>
+                  <CardTitle>{plan.name}</CardTitle>
+                  <CardDescription>{plan.description}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="mb-6">
+                    <span className="text-4xl font-bold">
+                      {formatCurrency(plan.price)}
+                    </span>
                     <span className="text-muted-foreground">/month</span>
+                  </div>
+                  <ul className="space-y-3">
+                    {plan.features.map((feature, i) => (
+                      <li key={i} className="flex items-center gap-2 text-sm">
+                        {feature.icon ? (
+                          <feature.icon className="h-4 w-4 text-primary" />
+                        ) : (
+                          <Check className="h-4 w-4 text-primary" />
+                        )}
+                        {feature.text}
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+                <CardFooter>
+                  {isCurrentPlan ? (
+                    <Button className="w-full" variant="outline" disabled>
+                      Current Plan
+                    </Button>
+                  ) : isDowngrade ? (
+                    <Button
+                      className="w-full"
+                      variant="outline"
+                      onClick={handleManageBilling}
+                    >
+                      Downgrade
+                    </Button>
+                  ) : (
+                    <Button
+                      className="w-full"
+                      variant={plan.highlighted ? "default" : "outline"}
+                      onClick={() => handleSubscribe(plan.id)}
+                      disabled={loadingPlan === plan.id}
+                    >
+                      {loadingPlan === plan.id && (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      )}
+                      {subscription ? "Upgrade" : "Get Started"}
+                    </Button>
                   )}
-                </div>
-                <ul className="space-y-2">
-                  {plan.features.map((feature) => (
-                    <li key={feature} className="flex items-center gap-2 text-sm">
-                      <Check className="h-4 w-4 text-primary" />
-                      {feature}
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-              <CardFooter>
-                {currentPlan === plan.id ? (
-                  <Button className="w-full" variant="outline" disabled>
-                    Current Plan
-                  </Button>
-                ) : plan.id === "free" ? (
-                  <Button className="w-full" variant="outline" disabled>
-                    Free Plan
-                  </Button>
-                ) : (
-                  <Button
-                    className="w-full"
-                    onClick={() => handleSubscribe(plan.id)}
-                    disabled={loadingPlan === plan.id}
-                  >
-                    {loadingPlan === plan.id && (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    )}
-                    {currentPlan === "free" ? "Subscribe" : "Upgrade"}
-                  </Button>
-                )}
-              </CardFooter>
-            </Card>
-          ))}
+                </CardFooter>
+              </Card>
+            );
+          })}
         </div>
       </div>
+
+      {/* FAQ / Info */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Billing FAQ</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          <div>
+            <p className="font-medium">What counts as a call?</p>
+            <p className="text-muted-foreground">
+              Each inbound call answered by your AI assistant counts as one
+              call, regardless of duration. Spam calls that are automatically
+              filtered don't count toward your limit.
+            </p>
+          </div>
+          <div>
+            <p className="font-medium">What happens if I hit my limit?</p>
+            <p className="text-muted-foreground">
+              You'll receive a warning at 80% usage. When you reach your limit,
+              new calls will still be answered but you'll be prompted to
+              upgrade. We provide a small buffer to ensure no calls are missed.
+            </p>
+          </div>
+          <div>
+            <p className="font-medium">Can I change plans anytime?</p>
+            <p className="text-muted-foreground">
+              Yes! Upgrades take effect immediately. Downgrades take effect at
+              the end of your billing period. You can manage everything through
+              the billing portal.
+            </p>
+          </div>
+          <div>
+            <p className="font-medium">Do unused calls roll over?</p>
+            <p className="text-muted-foreground">
+              No, call limits reset at the start of each billing period. We
+              recommend choosing a plan that fits your typical monthly volume.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

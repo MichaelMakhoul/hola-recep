@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 import { constructWebhookEvent, PLANS, PlanType } from "@/lib/stripe";
+import {
+  handleSubscriptionCreated,
+  handleSubscriptionUpdated,
+  handleSubscriptionCanceled,
+  resetMonthlyUsage,
+} from "@/lib/stripe/billing-service";
+import { createAdminClient } from "@/lib/supabase/admin";
 import type Stripe from "stripe";
 
 // POST /api/webhooks/stripe - Handle Stripe webhook events
@@ -21,102 +27,42 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
     }
 
-    const supabase = createAdminClient();
-
     console.log("Stripe webhook received:", event.type);
 
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
-        const customerId = session.customer as string;
         const subscriptionId = session.subscription as string;
 
-        // Get organization by Stripe customer ID
-        const { data: org } = await (supabase
-          .from("organizations") as any)
-          .select("id")
-          .eq("stripe_customer_id", customerId)
-          .single();
+        if (subscriptionId) {
+          // Retrieve the full subscription to get metadata
+          const stripe = (await import("stripe")).default;
+          const stripeClient = new stripe(process.env.STRIPE_SECRET_KEY!, {
+            apiVersion: "2025-02-24.acacia",
+          });
+          const subscription = await stripeClient.subscriptions.retrieve(subscriptionId);
 
-        if (!org) {
-          console.error("Organization not found for customer:", customerId);
-          break;
+          // Use billing service to handle subscription creation
+          await handleSubscriptionCreated(subscription);
         }
+        break;
+      }
 
-        // Get subscription details
-        const stripe = (await import("stripe")).default;
-        const stripeClient = new stripe(process.env.STRIPE_SECRET_KEY!);
-        const subscription = await stripeClient.subscriptions.retrieve(subscriptionId);
-        const priceId = subscription.items.data[0]?.price.id;
-
-        // Find plan type from price ID
-        let planType: PlanType = "free";
-        for (const [key, plan] of Object.entries(PLANS)) {
-          if (plan.stripePriceId === priceId) {
-            planType = key as PlanType;
-            break;
-          }
-        }
-
-        // Create or update subscription record
-        await (supabase.from("subscriptions") as any).upsert({
-          organization_id: org.id,
-          stripe_subscription_id: subscriptionId,
-          stripe_price_id: priceId,
-          plan_type: planType,
-          status: subscription.status,
-          included_minutes: PLANS[planType].minutes,
-          current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-          current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-          cancel_at_period_end: subscription.cancel_at_period_end,
-        }, {
-          onConflict: "organization_id",
-        });
-
+      case "customer.subscription.created": {
+        const subscription = event.data.object as Stripe.Subscription;
+        await handleSubscriptionCreated(subscription);
         break;
       }
 
       case "customer.subscription.updated": {
         const subscription = event.data.object as Stripe.Subscription;
-        const priceId = subscription.items.data[0]?.price.id;
-
-        // Find plan type
-        let planType: PlanType = "free";
-        for (const [key, plan] of Object.entries(PLANS)) {
-          if (plan.stripePriceId === priceId) {
-            planType = key as PlanType;
-            break;
-          }
-        }
-
-        // Update subscription record
-        await (supabase
-          .from("subscriptions") as any)
-          .update({
-            stripe_price_id: priceId,
-            plan_type: planType,
-            status: subscription.status,
-            included_minutes: PLANS[planType].minutes,
-            current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
-            current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
-            cancel_at_period_end: subscription.cancel_at_period_end,
-          })
-          .eq("stripe_subscription_id", subscription.id);
-
+        await handleSubscriptionUpdated(subscription);
         break;
       }
 
       case "customer.subscription.deleted": {
         const subscription = event.data.object as Stripe.Subscription;
-
-        // Update subscription status to canceled
-        await (supabase
-          .from("subscriptions") as any)
-          .update({
-            status: "canceled",
-          })
-          .eq("stripe_subscription_id", subscription.id);
-
+        await handleSubscriptionCanceled(subscription);
         break;
       }
 
@@ -124,24 +70,19 @@ export async function POST(request: Request) {
         const invoice = event.data.object as Stripe.Invoice;
         const subscriptionId = invoice.subscription as string;
 
-        if (subscriptionId) {
-          // Reset usage records at the start of new billing period
-          const { data: sub } = await (supabase
-            .from("subscriptions") as any)
+        // Reset call usage at the start of new billing period
+        if (subscriptionId && invoice.billing_reason === "subscription_cycle") {
+          const supabase = createAdminClient();
+          const { data: sub } = await (supabase as any)
+            .from("subscriptions")
             .select("organization_id")
             .eq("stripe_subscription_id", subscriptionId)
             .single();
 
           if (sub) {
-            // Mark previous usage records as reported
-            await (supabase
-              .from("usage_records") as any)
-              .update({ reported_to_stripe: true })
-              .eq("organization_id", sub.organization_id)
-              .eq("reported_to_stripe", false);
+            await resetMonthlyUsage(sub.organization_id);
           }
         }
-
         break;
       }
 
@@ -150,13 +91,13 @@ export async function POST(request: Request) {
         const subscriptionId = invoice.subscription as string;
 
         if (subscriptionId) {
+          const supabase = createAdminClient();
           // Update subscription status to past_due
-          await (supabase
-            .from("subscriptions") as any)
+          await (supabase as any)
+            .from("subscriptions")
             .update({ status: "past_due" })
             .eq("stripe_subscription_id", subscriptionId);
         }
-
         break;
       }
 

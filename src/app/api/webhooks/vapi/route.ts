@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import crypto from "crypto";
+import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
+import { sendMissedCallNotification, sendVoicemailNotification } from "@/lib/notifications/notification-service";
+import { incrementCallUsage, canMakeCall } from "@/lib/stripe/billing-service";
+import { withRateLimit } from "@/lib/security/rate-limiter";
 
 // Verify Vapi webhook signature
 function verifySignature(payload: string, signature: string | null): boolean {
@@ -12,10 +16,12 @@ function verifySignature(payload: string, signature: string | null): boolean {
     .update(payload)
     .digest("hex");
 
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
+  // Prevent timing attacks by checking lengths first
+  const sigBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (sigBuffer.length !== expectedBuffer.length) return false;
+
+  return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
 }
 
 interface VapiCallEvent {
@@ -73,11 +79,29 @@ function mapStatus(vapiStatus: string): string {
 // POST /api/webhooks/vapi - Handle Vapi webhook events
 export async function POST(request: Request) {
   try {
+    // Rate limit - webhook endpoints (high volume)
+    const { allowed, headers } = withRateLimit(request, "/api/webhooks/vapi", "webhook");
+    if (!allowed) {
+      console.error("Vapi webhook rate limited");
+      return NextResponse.json(
+        { error: "Too many requests" },
+        { status: 429, headers }
+      );
+    }
+
     const payload = await request.text();
     const signature = request.headers.get("x-vapi-signature");
 
-    // Verify signature in production
-    if (process.env.NODE_ENV === "production" && process.env.VAPI_WEBHOOK_SECRET) {
+    // SECURITY: Always verify webhook signature
+    // Only skip in explicit test mode with TEST_MODE=true
+    const skipVerification = process.env.TEST_MODE === "true" && process.env.NODE_ENV !== "production";
+
+    if (!skipVerification) {
+      if (!process.env.VAPI_WEBHOOK_SECRET) {
+        console.error("VAPI_WEBHOOK_SECRET not configured - rejecting webhook");
+        return NextResponse.json({ error: "Webhook not configured" }, { status: 500 });
+      }
+
       if (!verifySignature(payload, signature)) {
         console.error("Invalid webhook signature");
         return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
@@ -164,48 +188,111 @@ export async function POST(request: Request) {
         const cost =
           call.cost || event.message.costBreakdown?.total;
 
-        // Update call record
+        // Get the call record to find organization_id
+        const { data: existingCall } = await (supabase
+          .from("calls") as any)
+          .select("id, organization_id, caller_phone")
+          .eq("vapi_call_id", call.id)
+          .single();
+
+        // Run spam analysis
+        let spamAnalysis = null;
+        if (existingCall && call.customer?.number) {
+          const spamMetadata: CallMetadata = {
+            callerPhone: call.customer.number,
+            organizationId: existingCall.organization_id,
+            timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+            duration: durationSeconds ?? undefined,
+            transcript: transcript ?? undefined,
+          };
+
+          try {
+            spamAnalysis = await analyzeCall(spamMetadata);
+            console.log("Spam analysis result:", {
+              callId: call.id,
+              isSpam: spamAnalysis.isSpam,
+              score: spamAnalysis.spamScore,
+              recommendation: spamAnalysis.recommendation,
+            });
+          } catch (error) {
+            console.error("Spam analysis failed:", error);
+          }
+        }
+
+        // Determine call status
+        const callStatus = call.endedReason === "customer-ended" || call.endedReason === "assistant-ended"
+          ? "completed"
+          : call.endedReason === "no-answer"
+          ? "no-answer"
+          : call.endedReason === "busy"
+          ? "busy"
+          : "completed";
+
+        // Update call record with spam analysis
         await (supabase
           .from("calls") as any)
           .update({
-            status: call.endedReason === "customer-ended" || call.endedReason === "assistant-ended"
-              ? "completed"
-              : call.endedReason === "no-answer"
-              ? "no-answer"
-              : call.endedReason === "busy"
-              ? "busy"
-              : "completed",
+            status: callStatus,
             ended_at: call.endedAt,
             duration_seconds: durationSeconds,
             transcript,
             recording_url: recordingUrl,
             summary,
             cost_cents: cost ? Math.round(cost * 100) : null,
+            is_spam: spamAnalysis?.isSpam ?? false,
+            spam_score: spamAnalysis?.spamScore ?? null,
             metadata: {
               endedReason: call.endedReason,
               analysis: call.analysis,
+              spamAnalysis: spamAnalysis ? {
+                reasons: spamAnalysis.reasons,
+                confidence: spamAnalysis.confidence,
+                recommendation: spamAnalysis.recommendation,
+              } : null,
             },
           })
           .eq("vapi_call_id", call.id);
 
-        // Create usage record for billing
-        if (durationSeconds && durationSeconds > 0) {
-          const { data: callRecord } = await (supabase
-            .from("calls") as any)
-            .select("id, organization_id")
-            .eq("vapi_call_id", call.id)
-            .single();
+        // Increment call usage for billing (skip for spam calls)
+        // Using call-based pricing: each answered call counts as 1, regardless of duration
+        const shouldTrackUsage = callStatus === "completed" &&
+          (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
-          if (callRecord) {
-            const minutesUsed = Math.ceil(durationSeconds / 60);
-            await (supabase.from("usage_records") as any).insert({
-              organization_id: callRecord.organization_id,
-              call_id: callRecord.id,
-              period_start: call.startedAt,
-              period_end: call.endedAt,
-              minutes_used: minutesUsed,
-              cost_cents: cost ? Math.round(cost * 100) : 0,
-            });
+        if (shouldTrackUsage && existingCall) {
+          const { success, shouldUpgrade } = await incrementCallUsage(existingCall.organization_id);
+          if (shouldUpgrade) {
+            console.log(`Organization ${existingCall.organization_id} approaching call limit`);
+            // In production, you might want to send a notification here
+          }
+        }
+
+        // Send notifications based on call outcome (skip for spam)
+        if (existingCall && !spamAnalysis?.isSpam) {
+          // Check if this was a missed call (no answer or very short duration)
+          if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
+            await sendMissedCallNotification({
+              organizationId: existingCall.organization_id,
+              callId: existingCall.id,
+              callerPhone: call.customer?.number || "Unknown",
+              timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+              duration: durationSeconds ?? undefined,
+              summary: summary ?? undefined,
+            }).catch((err) => console.error("Failed to send missed call notification:", err));
+          }
+
+          // Check if there's a voicemail (recording URL with short duration could be voicemail)
+          if (recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10) {
+            // This heuristic assumes voicemails are typically 10-120 seconds
+            // In production, you'd have a separate voicemail detection mechanism
+            await sendVoicemailNotification({
+              organizationId: existingCall.organization_id,
+              callId: existingCall.id,
+              callerPhone: call.customer?.number || "Unknown",
+              timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+              duration: durationSeconds,
+              voicemailUrl: recordingUrl,
+              voicemailTranscript: transcript ?? undefined,
+            }).catch((err) => console.error("Failed to send voicemail notification:", err));
           }
         }
 

@@ -1,0 +1,817 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  ArrowLeft,
+  Bot,
+  Mic,
+  Brain,
+  Phone,
+  Calendar,
+  ShieldAlert,
+  BookOpen,
+  Settings,
+  Loader2,
+  Plus,
+  Trash2,
+  ExternalLink,
+  Globe,
+} from "lucide-react";
+import { getIndustryTemplates } from "@/lib/templates";
+
+// Voice options
+const VOICE_OPTIONS = [
+  { value: "rachel", label: "Rachel (Female)", provider: "11labs" },
+  { value: "drew", label: "Drew (Male)", provider: "11labs" },
+  { value: "clyde", label: "Clyde (Male)", provider: "11labs" },
+  { value: "paul", label: "Paul (Male)", provider: "11labs" },
+  { value: "domi", label: "Domi (Female)", provider: "11labs" },
+  { value: "dave", label: "Dave (Male)", provider: "11labs" },
+  { value: "fin", label: "Fin (Male)", provider: "11labs" },
+  { value: "sarah", label: "Sarah (Female)", provider: "11labs" },
+];
+
+// Model options
+const MODEL_OPTIONS = [
+  { value: "gpt-4o-mini", label: "GPT-4o Mini (Recommended)", provider: "openai" },
+  { value: "gpt-4o", label: "GPT-4o", provider: "openai" },
+  { value: "gpt-4-turbo", label: "GPT-4 Turbo", provider: "openai" },
+];
+
+// Industry templates
+const INDUSTRY_TEMPLATES = getIndustryTemplates();
+
+interface Assistant {
+  id: string;
+  name: string;
+  system_prompt: string;
+  first_message: string;
+  voice_id: string;
+  voice_provider: string;
+  model: string;
+  model_provider: string;
+  is_active: boolean;
+  settings: Record<string, any>;
+  vapi_assistant_id: string | null;
+  phone_numbers?: { id: string; phone_number: string }[];
+}
+
+interface TransferRule {
+  id: string;
+  name: string;
+  trigger_keywords: string[];
+  trigger_intent: string | null;
+  transfer_to_phone: string;
+  transfer_to_name: string | null;
+  announcement_message: string | null;
+  priority: number;
+  is_active: boolean;
+}
+
+interface KnowledgeBase {
+  id: string;
+  source_type: string;
+  source_url: string | null;
+  content: string;
+  is_active: boolean;
+}
+
+interface CalendarIntegration {
+  id: string;
+  provider: string;
+  calendar_id: string | null;
+  booking_url: string | null;
+  is_active: boolean;
+}
+
+interface AssistantBuilderProps {
+  assistant: Assistant;
+  organizationId: string;
+  transferRules: TransferRule[];
+  knowledgeBases: KnowledgeBase[];
+  calendarIntegration: CalendarIntegration | null;
+}
+
+export function AssistantBuilder({
+  assistant,
+  organizationId,
+  transferRules: initialTransferRules,
+  knowledgeBases: initialKnowledgeBases,
+  calendarIntegration,
+}: AssistantBuilderProps) {
+  const router = useRouter();
+  const { toast } = useToast();
+
+  // Basic info state
+  const [name, setName] = useState(assistant.name);
+  const [systemPrompt, setSystemPrompt] = useState(assistant.system_prompt);
+  const [firstMessage, setFirstMessage] = useState(assistant.first_message);
+  const [voiceId, setVoiceId] = useState(assistant.voice_id);
+  const [model, setModel] = useState(assistant.model);
+  const [isActive, setIsActive] = useState(assistant.is_active);
+
+  // Settings state
+  const [maxCallDuration, setMaxCallDuration] = useState(
+    assistant.settings?.maxCallDuration || 600
+  );
+  const [spamFilterEnabled, setSpamFilterEnabled] = useState(
+    assistant.settings?.spamFilterEnabled ?? true
+  );
+
+  // Transfer rules state
+  const [transferRules, setTransferRules] = useState(initialTransferRules);
+  const [transferEnabled, setTransferEnabled] = useState(transferRules.length > 0);
+  const [newTransferPhone, setNewTransferPhone] = useState("");
+  const [newTransferName, setNewTransferName] = useState("");
+
+  // Knowledge base state
+  const [knowledgeBases, setKnowledgeBases] = useState(initialKnowledgeBases);
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [isScrapingWebsite, setIsScrapingWebsite] = useState(false);
+
+  // Saving state
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Apply industry template
+  const applyTemplate = (industryKey: string) => {
+    const template = INDUSTRY_TEMPLATES.find((t) => t.industry === industryKey);
+    if (template) {
+      setSystemPrompt(template.systemPrompt);
+      setFirstMessage(template.firstMessage);
+      if (template.voiceId) {
+        setVoiceId(template.voiceId);
+      }
+      toast({
+        title: "Template Applied",
+        description: `Applied ${template.name} template. You can customize it further.`,
+      });
+    }
+  };
+
+  // Save assistant
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      const response = await fetch(`/api/v1/assistants/${assistant.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          systemPrompt,
+          firstMessage,
+          voiceId,
+          model,
+          isActive,
+          settings: {
+            maxCallDuration,
+            spamFilterEnabled,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to save assistant");
+      }
+
+      toast({
+        title: "Saved",
+        description: "Assistant settings have been updated.",
+      });
+
+      router.refresh();
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to save assistant settings.",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Add transfer rule
+  const addTransferRule = async () => {
+    if (!newTransferPhone) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Please enter a phone number for transfers.",
+      });
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/v1/transfer/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assistantId: assistant.id,
+          name: newTransferName || "Default Transfer",
+          transferToPhone: newTransferPhone,
+          transferToName: newTransferName || null,
+          triggerKeywords: ["speak to a human", "talk to someone", "representative"],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to create transfer rule");
+      }
+
+      const { rule } = await response.json();
+      setTransferRules([...transferRules, rule]);
+      setNewTransferPhone("");
+      setNewTransferName("");
+
+      toast({
+        title: "Transfer Rule Added",
+        description: "Callers can now be transferred to this number.",
+      });
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to add transfer rule.",
+      });
+    }
+  };
+
+  // Delete transfer rule
+  const deleteTransferRule = async (ruleId: string) => {
+    try {
+      const response = await fetch(`/api/v1/transfer/rules/${ruleId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete transfer rule");
+      }
+
+      setTransferRules(transferRules.filter((r) => r.id !== ruleId));
+
+      toast({
+        title: "Transfer Rule Deleted",
+      });
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to delete transfer rule.",
+      });
+    }
+  };
+
+  // Scrape website for knowledge base
+  const scrapeWebsite = async () => {
+    if (!websiteUrl) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Please enter a website URL.",
+      });
+      return;
+    }
+
+    setIsScrapingWebsite(true);
+    try {
+      const response = await fetch("/api/v1/knowledge-base/scrape", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: websiteUrl,
+          assistantId: assistant.id,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to scrape website");
+      }
+
+      const { data } = await response.json();
+
+      // Update local state
+      const newKb: KnowledgeBase = {
+        id: Date.now().toString(), // Temporary ID
+        source_type: "website",
+        source_url: websiteUrl,
+        content: data.content,
+        is_active: true,
+      };
+      setKnowledgeBases([...knowledgeBases, newKb]);
+      setWebsiteUrl("");
+
+      toast({
+        title: "Website Imported",
+        description: `Imported ${data.totalPages} pages from your website.`,
+      });
+
+      router.refresh();
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to import from website. Please check the URL and try again.",
+      });
+    } finally {
+      setIsScrapingWebsite(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link href="/assistants">
+            <Button variant="ghost" size="icon">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold">{assistant.name}</h1>
+              <Badge variant={isActive ? "success" : "secondary"}>
+                {isActive ? "Active" : "Inactive"}
+              </Badge>
+            </div>
+            {assistant.phone_numbers && assistant.phone_numbers.length > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {assistant.phone_numbers.map((p) => p.phone_number).join(", ")}
+              </p>
+            )}
+          </div>
+        </div>
+        <Button onClick={handleSave} disabled={isSaving}>
+          {isSaving ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            "Save Changes"
+          )}
+        </Button>
+      </div>
+
+      {/* Tabs */}
+      <Tabs defaultValue="basics" className="space-y-6">
+        <TabsList className="grid w-full grid-cols-6">
+          <TabsTrigger value="basics" className="flex items-center gap-2">
+            <Bot className="h-4 w-4" />
+            Basics
+          </TabsTrigger>
+          <TabsTrigger value="knowledge" className="flex items-center gap-2">
+            <BookOpen className="h-4 w-4" />
+            Knowledge
+          </TabsTrigger>
+          <TabsTrigger value="voice" className="flex items-center gap-2">
+            <Mic className="h-4 w-4" />
+            Voice
+          </TabsTrigger>
+          <TabsTrigger value="transfers" className="flex items-center gap-2">
+            <Phone className="h-4 w-4" />
+            Transfers
+          </TabsTrigger>
+          <TabsTrigger value="calendar" className="flex items-center gap-2">
+            <Calendar className="h-4 w-4" />
+            Calendar
+          </TabsTrigger>
+          <TabsTrigger value="settings" className="flex items-center gap-2">
+            <Settings className="h-4 w-4" />
+            Settings
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Basics Tab */}
+        <TabsContent value="basics" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Basic Information</CardTitle>
+              <CardDescription>
+                Configure your assistant's name and how it introduces itself
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Assistant Name</Label>
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g., Sarah - Front Desk"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="firstMessage">Greeting Message</Label>
+                <Textarea
+                  id="firstMessage"
+                  value={firstMessage}
+                  onChange={(e) => setFirstMessage(e.target.value)}
+                  rows={2}
+                  placeholder="What should the assistant say when answering?"
+                />
+                <p className="text-xs text-muted-foreground">
+                  This is the first thing callers will hear
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Active Status</Label>
+                  <p className="text-xs text-muted-foreground">
+                    When inactive, calls will go to voicemail
+                  </p>
+                </div>
+                <Switch checked={isActive} onCheckedChange={setIsActive} />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Instructions (System Prompt)</CardTitle>
+              <CardDescription>
+                Tell your AI how to behave and what information to provide
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <Select onValueChange={applyTemplate}>
+                  <SelectTrigger className="w-[200px]">
+                    <SelectValue placeholder="Apply Template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {INDUSTRY_TEMPLATES.map((template) => (
+                      <SelectItem key={template.industry} value={template.industry}>
+                        {template.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-sm text-muted-foreground self-center">
+                  Start with an industry template and customize
+                </p>
+              </div>
+
+              <Textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={15}
+                placeholder="Describe how the assistant should behave..."
+                className="font-mono text-sm"
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Knowledge Tab */}
+        <TabsContent value="knowledge" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Globe className="h-5 w-5" />
+                Import from Website
+              </CardTitle>
+              <CardDescription>
+                Automatically extract business information from your website
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="https://yourbusiness.com"
+                  value={websiteUrl}
+                  onChange={(e) => setWebsiteUrl(e.target.value)}
+                  className="flex-1"
+                />
+                <Button
+                  onClick={scrapeWebsite}
+                  disabled={isScrapingWebsite || !websiteUrl}
+                >
+                  {isScrapingWebsite ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Importing...
+                    </>
+                  ) : (
+                    "Import"
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                We'll extract services, FAQs, contact info, and business hours from your website
+              </p>
+            </CardContent>
+          </Card>
+
+          {knowledgeBases.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Knowledge Sources</CardTitle>
+                <CardDescription>
+                  Information your AI uses to answer questions
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {knowledgeBases.map((kb) => (
+                    <div
+                      key={kb.id}
+                      className="flex items-center justify-between p-3 border rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Globe className="h-4 w-4 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium capitalize">{kb.source_type}</p>
+                          {kb.source_url && (
+                            <p className="text-xs text-muted-foreground">
+                              {kb.source_url}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <Badge variant={kb.is_active ? "success" : "secondary"}>
+                        {kb.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        {/* Voice Tab */}
+        <TabsContent value="voice" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Voice Settings</CardTitle>
+              <CardDescription>
+                Choose the voice and AI model for your assistant
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Voice</Label>
+                  <Select value={voiceId} onValueChange={setVoiceId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a voice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {VOICE_OPTIONS.map((voice) => (
+                        <SelectItem key={voice.value} value={voice.value}>
+                          {voice.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>AI Model</Label>
+                  <Select value={model} onValueChange={setModel}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MODEL_OPTIONS.map((m) => (
+                        <SelectItem key={m.value} value={m.value}>
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Transfers Tab */}
+        <TabsContent value="transfers" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Phone className="h-5 w-5" />
+                Call Transfers
+              </CardTitle>
+              <CardDescription>
+                Configure when and where calls should be transferred to a human
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Enable Call Transfers</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Allow callers to be transferred to a human when needed
+                  </p>
+                </div>
+                <Switch
+                  checked={transferEnabled}
+                  onCheckedChange={setTransferEnabled}
+                />
+              </div>
+
+              {transferEnabled && (
+                <>
+                  <div className="border-t pt-4">
+                    <Label className="mb-2 block">Add Transfer Destination</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Phone number"
+                        value={newTransferPhone}
+                        onChange={(e) => setNewTransferPhone(e.target.value)}
+                        className="flex-1"
+                      />
+                      <Input
+                        placeholder="Name (optional)"
+                        value={newTransferName}
+                        onChange={(e) => setNewTransferName(e.target.value)}
+                        className="flex-1"
+                      />
+                      <Button onClick={addTransferRule}>
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {transferRules.length > 0 && (
+                    <div className="space-y-2">
+                      {transferRules.map((rule) => (
+                        <div
+                          key={rule.id}
+                          className="flex items-center justify-between p-3 border rounded-lg"
+                        >
+                          <div>
+                            <p className="font-medium">
+                              {rule.transfer_to_name || rule.transfer_to_phone}
+                            </p>
+                            <p className="text-sm text-muted-foreground">
+                              {rule.transfer_to_phone}
+                            </p>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => deleteTransferRule(rule.id)}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Calendar Tab */}
+        <TabsContent value="calendar" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Calendar className="h-5 w-5" />
+                Calendar Integration
+              </CardTitle>
+              <CardDescription>
+                Let your AI book appointments directly into your calendar
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {calendarIntegration ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-green-50 dark:bg-green-950 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <Calendar className="h-5 w-5 text-green-600" />
+                      <div>
+                        <p className="font-medium">Cal.com Connected</p>
+                        <p className="text-sm text-muted-foreground">
+                          Your AI can book appointments automatically
+                        </p>
+                      </div>
+                    </div>
+                    <Badge variant="success">Active</Badge>
+                  </div>
+                  <Link href="/settings/calendar">
+                    <Button variant="outline">
+                      Manage Calendar Settings
+                      <ExternalLink className="h-4 w-4 ml-2" />
+                    </Button>
+                  </Link>
+                </div>
+              ) : (
+                <div className="text-center py-6">
+                  <Calendar className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground mb-4">
+                    Connect your calendar to enable automatic appointment booking
+                  </p>
+                  <Link href="/settings/calendar">
+                    <Button>
+                      Connect Calendar
+                      <ExternalLink className="h-4 w-4 ml-2" />
+                    </Button>
+                  </Link>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Settings Tab */}
+        <TabsContent value="settings" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                Call Settings
+              </CardTitle>
+              <CardDescription>
+                Configure call handling behavior
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>Maximum Call Duration (seconds)</Label>
+                <Input
+                  type="number"
+                  value={maxCallDuration}
+                  onChange={(e) => setMaxCallDuration(parseInt(e.target.value) || 600)}
+                  min={60}
+                  max={3600}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Calls will automatically end after this duration (default: 10 minutes)
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <ShieldAlert className="h-4 w-4" />
+                    Spam Call Filtering
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically detect and filter spam calls
+                  </p>
+                </div>
+                <Switch
+                  checked={spamFilterEnabled}
+                  onCheckedChange={setSpamFilterEnabled}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Technical Details</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Assistant ID</span>
+                <code className="bg-muted px-2 py-1 rounded">{assistant.id}</code>
+              </div>
+              {assistant.vapi_assistant_id && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Vapi ID</span>
+                  <code className="bg-muted px-2 py-1 rounded">
+                    {assistant.vapi_assistant_id}
+                  </code>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

@@ -101,11 +101,11 @@ export async function POST(request: Request) {
       }
     }
 
-    // Buy phone number from Vapi
+    // Buy phone number from Vapi (uses Vapi's free SIP numbers)
     const vapi = getVapiClient();
     const vapiPhoneNumber = await vapi.buyPhoneNumber({
-      areaCode: validatedData.areaCode,
-      numberDesiredCountry: validatedData.country,
+      provider: "vapi",
+      numberDesiredAreaCode: validatedData.areaCode,
       assistantId: vapiAssistantId,
       name: validatedData.friendlyName,
     });
@@ -138,12 +138,19 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json(phoneNumber, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error buying phone number:", error);
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { error: "Validation error", details: error.errors },
         { status: 400 }
+      );
+    }
+    // Pass through Vapi error messages (they contain helpful hints)
+    if (error?.message) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error?.statusCode || 500 }
       );
     }
     return NextResponse.json(

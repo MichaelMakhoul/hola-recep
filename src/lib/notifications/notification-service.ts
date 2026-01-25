@@ -1,0 +1,518 @@
+/**
+ * Notification Service
+ *
+ * Handles sending email and SMS notifications for various events:
+ * - Missed calls
+ * - Voicemails
+ * - Appointment bookings
+ * - Daily summaries
+ */
+
+import { createAdminClient } from "@/lib/supabase/admin";
+import { isUrlAllowed, escapeHtml } from "@/lib/security/validation";
+
+export interface NotificationPreferences {
+  email_on_missed_call: boolean;
+  email_on_voicemail: boolean;
+  email_on_appointment_booked: boolean;
+  email_daily_summary: boolean;
+  sms_on_missed_call: boolean;
+  sms_on_voicemail: boolean;
+  sms_phone_number: string | null;
+  webhook_url: string | null;
+}
+
+export interface CallNotificationData {
+  organizationId: string;
+  callId: string;
+  callerPhone: string;
+  callerName?: string;
+  duration?: number;
+  summary?: string;
+  transcript?: string;
+  outcome?: string;
+  recordingUrl?: string;
+  timestamp: Date;
+}
+
+export interface VoicemailNotificationData extends CallNotificationData {
+  voicemailUrl: string;
+  voicemailTranscript?: string;
+}
+
+export interface AppointmentNotificationData {
+  organizationId: string;
+  callerPhone: string;
+  callerName?: string;
+  appointmentDate: Date;
+  appointmentTime: string;
+  serviceName?: string;
+}
+
+export interface DailySummaryData {
+  organizationId: string;
+  date: Date;
+  totalCalls: number;
+  answeredCalls: number;
+  missedCalls: number;
+  appointmentsBooked: number;
+  averageCallDuration: number;
+  topCallerIntents: string[];
+}
+
+/**
+ * Get notification preferences for an organization
+ */
+export async function getNotificationPreferences(
+  organizationId: string
+): Promise<NotificationPreferences | null> {
+  const supabase = createAdminClient();
+
+  const { data, error } = await (supabase as any)
+    .from("notification_preferences")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return {
+    email_on_missed_call: data.email_on_missed_call ?? true,
+    email_on_voicemail: data.email_on_voicemail ?? true,
+    email_on_appointment_booked: data.email_on_appointment_booked ?? true,
+    email_daily_summary: data.email_daily_summary ?? true,
+    sms_on_missed_call: data.sms_on_missed_call ?? false,
+    sms_on_voicemail: data.sms_on_voicemail ?? false,
+    sms_phone_number: data.sms_phone_number,
+    webhook_url: data.webhook_url,
+  };
+}
+
+/**
+ * Get organization owner's email
+ */
+export async function getOrganizationOwnerEmail(
+  organizationId: string
+): Promise<string | null> {
+  const supabase = createAdminClient();
+
+  // Get owner's user_id
+  const { data: member, error: memberError } = await (supabase as any)
+    .from("org_members")
+    .select("user_id")
+    .eq("organization_id", organizationId)
+    .eq("role", "owner")
+    .single();
+
+  if (memberError || !member) {
+    return null;
+  }
+
+  // Get user's email from profile
+  const { data: profile, error: profileError } = await (supabase as any)
+    .from("user_profiles")
+    .select("email")
+    .eq("id", member.user_id)
+    .single();
+
+  if (profileError || !profile) {
+    return null;
+  }
+
+  return profile.email;
+}
+
+/**
+ * Send missed call notification
+ */
+export async function sendMissedCallNotification(
+  data: CallNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  if (!prefs) return;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  // Send email notification
+  if (prefs.email_on_missed_call && email) {
+    await sendEmail({
+      to: email,
+      subject: `Missed Call from ${data.callerName || data.callerPhone}`,
+      template: "missed-call",
+      data: {
+        callerPhone: data.callerPhone,
+        callerName: data.callerName,
+        timestamp: data.timestamp.toLocaleString(),
+        summary: data.summary,
+      },
+    });
+  }
+
+  // Send SMS notification
+  if (prefs.sms_on_missed_call && prefs.sms_phone_number) {
+    await sendSMS({
+      to: prefs.sms_phone_number,
+      message: `Missed call from ${data.callerName || data.callerPhone} at ${data.timestamp.toLocaleTimeString()}`,
+    });
+  }
+
+  // Send webhook notification
+  if (prefs.webhook_url) {
+    await sendWebhook(prefs.webhook_url, {
+      event: "missed_call",
+      data,
+    });
+  }
+}
+
+/**
+ * Send voicemail notification
+ */
+export async function sendVoicemailNotification(
+  data: VoicemailNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  if (!prefs) return;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  // Send email notification
+  if (prefs.email_on_voicemail && email) {
+    await sendEmail({
+      to: email,
+      subject: `New Voicemail from ${data.callerName || data.callerPhone}`,
+      template: "voicemail",
+      data: {
+        callerPhone: data.callerPhone,
+        callerName: data.callerName,
+        timestamp: data.timestamp.toLocaleString(),
+        voicemailUrl: data.voicemailUrl,
+        transcript: data.voicemailTranscript,
+        duration: data.duration,
+      },
+    });
+  }
+
+  // Send SMS notification
+  if (prefs.sms_on_voicemail && prefs.sms_phone_number) {
+    await sendSMS({
+      to: prefs.sms_phone_number,
+      message: `New voicemail from ${data.callerName || data.callerPhone}. ${data.voicemailTranscript ? `"${data.voicemailTranscript.substring(0, 100)}..."` : ""}`,
+    });
+  }
+
+  // Send webhook notification
+  if (prefs.webhook_url) {
+    await sendWebhook(prefs.webhook_url, {
+      event: "voicemail",
+      data,
+    });
+  }
+}
+
+/**
+ * Send appointment booking notification
+ */
+export async function sendAppointmentNotification(
+  data: AppointmentNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  if (!prefs) return;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  // Send email notification
+  if (prefs.email_on_appointment_booked && email) {
+    await sendEmail({
+      to: email,
+      subject: `New Appointment Booked - ${data.appointmentDate.toLocaleDateString()}`,
+      template: "appointment-booked",
+      data: {
+        callerPhone: data.callerPhone,
+        callerName: data.callerName,
+        appointmentDate: data.appointmentDate.toLocaleDateString(),
+        appointmentTime: data.appointmentTime,
+        serviceName: data.serviceName,
+      },
+    });
+  }
+
+  // Send webhook notification
+  if (prefs.webhook_url) {
+    await sendWebhook(prefs.webhook_url, {
+      event: "appointment_booked",
+      data,
+    });
+  }
+}
+
+/**
+ * Send daily summary notification
+ */
+export async function sendDailySummaryNotification(
+  data: DailySummaryData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  if (!prefs) return;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  if (prefs.email_daily_summary && email) {
+    await sendEmail({
+      to: email,
+      subject: `Daily Call Summary - ${data.date.toLocaleDateString()}`,
+      template: "daily-summary",
+      data: {
+        date: data.date.toLocaleDateString(),
+        totalCalls: data.totalCalls,
+        answeredCalls: data.answeredCalls,
+        missedCalls: data.missedCalls,
+        appointmentsBooked: data.appointmentsBooked,
+        averageCallDuration: Math.round(data.averageCallDuration),
+        answerRate: data.totalCalls > 0
+          ? Math.round((data.answeredCalls / data.totalCalls) * 100)
+          : 0,
+      },
+    });
+  }
+
+  if (prefs.webhook_url) {
+    await sendWebhook(prefs.webhook_url, {
+      event: "daily_summary",
+      data,
+    });
+  }
+}
+
+// ============================================================
+// Email, SMS, and Webhook sending functions
+// These are abstractions that can be replaced with actual providers
+// ============================================================
+
+interface EmailParams {
+  to: string;
+  subject: string;
+  template: string;
+  data: Record<string, any>;
+}
+
+interface SMSParams {
+  to: string;
+  message: string;
+}
+
+interface WebhookPayload {
+  event: string;
+  data: any;
+}
+
+/**
+ * Send email using configured email provider
+ * TODO: Integrate with actual email provider (Resend, SendGrid, etc.)
+ */
+async function sendEmail(params: EmailParams): Promise<boolean> {
+  const { to, subject, template, data } = params;
+
+  // Check if email is configured
+  const apiKey = process.env.EMAIL_API_KEY;
+  const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
+
+  if (!apiKey) {
+    console.log("[Email] No API key configured, skipping email:", {
+      to,
+      subject,
+      template,
+    });
+    return false;
+  }
+
+  try {
+    // Generate email HTML from template
+    const html = generateEmailHtml(template, data);
+
+    // TODO: Replace with actual email provider integration
+    // Example with Resend:
+    // const resend = new Resend(apiKey);
+    // await resend.emails.send({
+    //   from: fromEmail,
+    //   to,
+    //   subject,
+    //   html,
+    // });
+
+    console.log("[Email] Would send email:", { to, subject, template });
+    return true;
+  } catch (error) {
+    console.error("[Email] Failed to send email:", error);
+    return false;
+  }
+}
+
+/**
+ * Send SMS using configured SMS provider
+ * TODO: Integrate with actual SMS provider (Twilio, etc.)
+ */
+async function sendSMS(params: SMSParams): Promise<boolean> {
+  const { to, message } = params;
+
+  // Check if SMS is configured
+  const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
+  const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+  const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
+
+  if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
+    console.log("[SMS] Twilio not configured, skipping SMS:", { to });
+    return false;
+  }
+
+  try {
+    // TODO: Replace with actual Twilio integration
+    // const client = twilio(twilioAccountSid, twilioAuthToken);
+    // await client.messages.create({
+    //   body: message,
+    //   to,
+    //   from: twilioFromNumber,
+    // });
+
+    console.log("[SMS] Would send SMS:", { to, message: message.substring(0, 50) });
+    return true;
+  } catch (error) {
+    console.error("[SMS] Failed to send SMS:", error);
+    return false;
+  }
+}
+
+/**
+ * Send webhook notification
+ * Includes SSRF protection to prevent webhooks to internal networks
+ */
+async function sendWebhook(url: string, payload: WebhookPayload): Promise<boolean> {
+  try {
+    // SSRF Protection: Prevent webhooks to internal/private networks
+    if (!isUrlAllowed(url)) {
+      console.error("[Webhook] URL blocked - internal or private address:", url);
+      return false;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Source": "hola-recep",
+      },
+      body: JSON.stringify({
+        ...payload,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("[Webhook] Failed to send webhook:", response.status);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("[Webhook] Failed to send webhook:", error);
+    return false;
+  }
+}
+
+/**
+ * Generate email HTML from template
+ * All user-provided data is HTML-escaped to prevent XSS
+ */
+function generateEmailHtml(template: string, data: Record<string, any>): string {
+  // Escape all user-provided data to prevent XSS
+  const safeData: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (typeof value === "string") {
+      safeData[key] = escapeHtml(value);
+    } else {
+      safeData[key] = value;
+    }
+  }
+
+  // Basic templates - in production, use a proper templating engine
+  const templates: Record<string, (data: Record<string, any>) => string> = {
+    "missed-call": (d) => `
+      <h2>Missed Call</h2>
+      <p>You missed a call from <strong>${d.callerName || d.callerPhone}</strong> at ${d.timestamp}.</p>
+      ${d.summary ? `<p><em>Summary: ${d.summary}</em></p>` : ""}
+      <p>Log in to your dashboard to see more details.</p>
+    `,
+    voicemail: (d) => `
+      <h2>New Voicemail</h2>
+      <p>You have a new voicemail from <strong>${d.callerName || d.callerPhone}</strong>.</p>
+      <p>Received at: ${d.timestamp}</p>
+      ${d.duration ? `<p>Duration: ${d.duration} seconds</p>` : ""}
+      ${d.transcript ? `<p><strong>Transcript:</strong><br/>${d.transcript}</p>` : ""}
+      ${d.voicemailUrl ? `<p><a href="${escapeHtml(d.voicemailUrl)}">Listen to voicemail</a></p>` : ""}
+    `,
+    "appointment-booked": (d) => `
+      <h2>New Appointment Booked</h2>
+      <p>A new appointment has been booked by <strong>${d.callerName || d.callerPhone}</strong>.</p>
+      <p><strong>Date:</strong> ${d.appointmentDate}</p>
+      <p><strong>Time:</strong> ${d.appointmentTime}</p>
+      ${d.serviceName ? `<p><strong>Service:</strong> ${d.serviceName}</p>` : ""}
+    `,
+    "daily-summary": (d) => `
+      <h2>Daily Call Summary - ${d.date}</h2>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">Total Calls</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>${d.totalCalls}</strong></td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">Answered Calls</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>${d.answeredCalls}</strong></td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">Missed Calls</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>${d.missedCalls}</strong></td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">Answer Rate</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>${d.answerRate}%</strong></td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">Appointments Booked</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;"><strong>${d.appointmentsBooked}</strong></td>
+        </tr>
+        <tr>
+          <td style="padding: 8px;">Avg Call Duration</td>
+          <td style="padding: 8px;"><strong>${d.averageCallDuration}s</strong></td>
+        </tr>
+      </table>
+    `,
+  };
+
+  const templateFn = templates[template];
+  if (!templateFn) {
+    // Don't expose raw data, return generic message
+    return `<p>Notification from Hola Recep</p>`;
+  }
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        h2 { color: #1a1a1a; }
+        a { color: #0066cc; }
+      </style>
+    </head>
+    <body>
+      ${templateFn(safeData)}
+      <hr style="margin-top: 30px; border: none; border-top: 1px solid #ddd;" />
+      <p style="font-size: 12px; color: #666;">
+        This email was sent by Hola Recep AI Receptionist.
+        <a href="${process.env.NEXT_PUBLIC_APP_URL || "https://holarecep.com"}/settings/notifications">Manage notification preferences</a>
+      </p>
+    </body>
+    </html>
+  `;
+}
