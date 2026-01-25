@@ -186,7 +186,7 @@ export default function OnboardingPage() {
           systemPrompt: data.systemPrompt,
           firstMessage: data.firstMessage,
           voiceId: data.voiceId || "EXAVITQu4vr4xnSDxMaL",
-          voiceProvider: "elevenlabs",
+          voiceProvider: "11labs",
           model: "gpt-4o-mini",
           modelProvider: "openai",
         }),

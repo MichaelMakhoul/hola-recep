@@ -12,12 +12,21 @@ const createAssistantSchema = z.object({
   systemPrompt: z.string().min(1),
   firstMessage: z.string().min(1),
   voiceId: z.string().default("rachel"),
-  voiceProvider: z.string().default("elevenlabs"),
+  voiceProvider: z.string().default("11labs"),
   model: z.string().default("gpt-4o-mini"),
   modelProvider: z.string().default("openai"),
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
 });
+
+// Map common voice provider names to Vapi's expected values
+function normalizeVoiceProvider(provider: string): string {
+  const providerMap: Record<string, string> = {
+    elevenlabs: "11labs",
+    "eleven-labs": "11labs",
+  };
+  return providerMap[provider.toLowerCase()] || provider;
+}
 
 // GET /api/v1/assistants - List all assistants
 export async function GET() {
@@ -94,7 +103,7 @@ export async function POST(request: Request) {
         systemPrompt: validatedData.systemPrompt,
       },
       voice: {
-        provider: validatedData.voiceProvider,
+        provider: normalizeVoiceProvider(validatedData.voiceProvider),
         voiceId: validatedData.voiceId,
       },
       firstMessage: validatedData.firstMessage,

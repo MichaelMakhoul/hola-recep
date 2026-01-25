@@ -45,14 +45,14 @@ import { getIndustryTemplates } from "@/lib/templates";
 
 // Voice options
 const VOICE_OPTIONS = [
-  { value: "rachel", label: "Rachel (Female)", provider: "elevenlabs" },
-  { value: "drew", label: "Drew (Male)", provider: "elevenlabs" },
-  { value: "clyde", label: "Clyde (Male)", provider: "elevenlabs" },
-  { value: "paul", label: "Paul (Male)", provider: "elevenlabs" },
-  { value: "domi", label: "Domi (Female)", provider: "elevenlabs" },
-  { value: "dave", label: "Dave (Male)", provider: "elevenlabs" },
-  { value: "fin", label: "Fin (Male)", provider: "elevenlabs" },
-  { value: "sarah", label: "Sarah (Female)", provider: "elevenlabs" },
+  { value: "rachel", label: "Rachel (Female)", provider: "11labs" },
+  { value: "drew", label: "Drew (Male)", provider: "11labs" },
+  { value: "clyde", label: "Clyde (Male)", provider: "11labs" },
+  { value: "paul", label: "Paul (Male)", provider: "11labs" },
+  { value: "domi", label: "Domi (Female)", provider: "11labs" },
+  { value: "dave", label: "Dave (Male)", provider: "11labs" },
+  { value: "fin", label: "Fin (Male)", provider: "11labs" },
+  { value: "sarah", label: "Sarah (Female)", provider: "11labs" },
 ];
 
 // Model options
