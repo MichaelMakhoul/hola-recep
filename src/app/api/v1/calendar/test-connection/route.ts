@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { CalComClient } from "@/lib/calendar/cal-com";
+import { withRateLimit } from "@/lib/security/rate-limiter";
 
 /**
  * POST /api/v1/calendar/test-connection
@@ -9,6 +10,15 @@ import { CalComClient } from "@/lib/calendar/cal-com";
  */
 export async function POST(request: NextRequest) {
   try {
+    // Rate limit - external API calls are expensive
+    const { allowed, headers } = withRateLimit(request, "/api/v1/calendar/test-connection", "expensive");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please try again later." },
+        { status: 429, headers }
+      );
+    }
+
     const supabase = await createClient();
 
     // Check authentication
