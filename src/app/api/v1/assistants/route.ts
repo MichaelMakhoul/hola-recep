@@ -93,6 +93,16 @@ export async function POST(request: Request) {
     const body = await request.json();
     const validatedData = createAssistantSchema.parse(body);
 
+    // Build server configuration for webhooks
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
+
+    const serverConfig = appUrl ? {
+      url: `${appUrl}/api/webhooks/vapi`,
+      ...(webhookSecret && { secret: webhookSecret }),
+      timeoutSeconds: 20,
+    } : undefined;
+
     // Create assistant in Vapi
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
@@ -112,6 +122,7 @@ export async function POST(request: Request) {
         model: "nova-2",
         language: "en",
       },
+      server: serverConfig,
       recordingEnabled: true,
       metadata: {
         organizationId: membership.organization_id,

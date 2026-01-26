@@ -83,6 +83,13 @@ export interface VapiCall {
   updatedAt: string;
 }
 
+export interface ServerConfig {
+  url: string;
+  secret?: string;
+  timeoutSeconds?: number;
+  headers?: Record<string, string>;
+}
+
 export interface CreateAssistantRequest {
   name: string;
   model: {
@@ -101,6 +108,7 @@ export interface CreateAssistantRequest {
     model?: string;
     language?: string;
   };
+  server?: ServerConfig;
   serverUrl?: string;
   serverUrlSecret?: string;
   endCallFunctionEnabled?: boolean;

@@ -142,6 +142,17 @@ export async function PATCH(
         vapiUpdate.firstMessage = validatedData.firstMessage;
       }
 
+      // Always ensure server URL is set for webhooks
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+      const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
+      if (appUrl) {
+        vapiUpdate.server = {
+          url: `${appUrl}/api/webhooks/vapi`,
+          ...(webhookSecret && { secret: webhookSecret }),
+          timeoutSeconds: 20,
+        };
+      }
+
       if (Object.keys(vapiUpdate).length > 0) {
         await vapi.updateAssistant(currentAssistant.vapi_assistant_id, vapiUpdate);
       }
