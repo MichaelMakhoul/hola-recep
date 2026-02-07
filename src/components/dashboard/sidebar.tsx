@@ -8,6 +8,7 @@ import {
   Bot,
   Phone,
   PhoneCall,
+  CalendarDays,
   Settings,
   CreditCard,
   Users,
@@ -49,6 +50,11 @@ const navigation = [
     name: "Calls",
     href: "/calls",
     icon: PhoneCall,
+  },
+  {
+    name: "Calendar",
+    href: "/calendar",
+    icon: CalendarDays,
   },
 ];
 
