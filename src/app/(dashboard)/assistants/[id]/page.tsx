@@ -19,6 +19,7 @@ interface Assistant {
   model_provider: string;
   is_active: boolean;
   settings: Record<string, any>;
+  prompt_config: Record<string, any> | null;
   vapi_assistant_id: string | null;
   created_at: string;
   phone_numbers?: { id: string; phone_number: string }[];
@@ -41,14 +42,6 @@ interface KnowledgeBase {
   source_type: string;
   source_url: string | null;
   content: string;
-  is_active: boolean;
-}
-
-interface CalendarIntegration {
-  id: string;
-  provider: string;
-  calendar_id: string | null;
-  booking_url: string | null;
   is_active: boolean;
 }
 
@@ -111,22 +104,12 @@ export default async function AssistantDetailPage({
     .eq("assistant_id", id)
     .eq("organization_id", organizationId) as { data: KnowledgeBase[] | null };
 
-  // Get calendar integration
-  const { data: calendarIntegration } = await (supabase as any)
-    .from("calendar_integrations")
-    .select("id, provider, calendar_id, booking_url, is_active")
-    .eq("organization_id", organizationId)
-    .or(`assistant_id.eq.${id},assistant_id.is.null`)
-    .eq("is_active", true)
-    .single() as { data: CalendarIntegration | null };
-
   return (
     <AssistantBuilder
       assistant={assistant}
       organizationId={organizationId}
       transferRules={transferRules || []}
       knowledgeBases={knowledgeBases || []}
-      calendarIntegration={calendarIntegration}
     />
   );
 }
