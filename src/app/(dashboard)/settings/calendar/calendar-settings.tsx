@@ -68,7 +68,7 @@ export function CalendarSettings({
     initialIntegration?.calendar_id || ""
   );
   const [selectedAssistant, setSelectedAssistant] = useState(
-    initialIntegration?.assistant_id || ""
+    initialIntegration?.assistant_id || "all"
   );
   const [bookingUrl, setBookingUrl] = useState(
     initialIntegration?.booking_url || ""
@@ -159,7 +159,7 @@ export function CalendarSettings({
           organizationId,
           apiKey: apiKey || undefined, // Only send if user entered a new key
           eventTypeId: selectedEventType,
-          assistantId: selectedAssistant || null,
+          assistantId: selectedAssistant === "all" ? null : selectedAssistant,
           bookingUrl,
         }),
       });
@@ -350,7 +350,7 @@ export function CalendarSettings({
                   <SelectValue placeholder="All assistants" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All assistants</SelectItem>
+                  <SelectItem value="all">All assistants</SelectItem>
                   {assistants.map((a) => (
                     <SelectItem key={a.id} value={a.id}>
                       {a.name}

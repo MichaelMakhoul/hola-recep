@@ -12,7 +12,8 @@ export interface VapiAssistant {
   model: {
     provider: string;
     model: string;
-    systemPrompt: string;
+    messages?: { role: string; content: string }[];
+    systemPrompt?: string;
     temperature?: number;
   };
   voice: {
@@ -90,12 +91,40 @@ export interface ServerConfig {
   headers?: Record<string, string>;
 }
 
+export interface VapiAnalysisPlan {
+  structuredDataPrompt?: string;
+  structuredDataSchema?: {
+    type: "object";
+    properties: Record<string, { type: string; description: string }>;
+    required?: string[];
+  };
+  summaryPrompt?: string;
+  successEvaluationRubric?: "PassFail" | "NumericScale";
+}
+
+export interface VapiToolFunction {
+  name: string;
+  description: string;
+  parameters: {
+    type: "object";
+    properties: Record<string, { type: string; description: string }>;
+    required?: string[];
+  };
+}
+
+export interface VapiTool {
+  type: "function";
+  function: VapiToolFunction;
+  server?: ServerConfig;
+}
+
 export interface CreateAssistantRequest {
   name: string;
   model: {
     provider: string;
     model: string;
-    systemPrompt: string;
+    messages?: { role: string; content: string }[];
+    systemPrompt?: string;
     temperature?: number;
   };
   voice: {
@@ -113,6 +142,8 @@ export interface CreateAssistantRequest {
   serverUrlSecret?: string;
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
+  analysisPlan?: VapiAnalysisPlan;
+  tools?: VapiTool[];
   metadata?: Record<string, unknown>;
 }
 
@@ -121,6 +152,7 @@ export interface UpdateAssistantRequest {
   model?: {
     provider?: string;
     model?: string;
+    messages?: { role: string; content: string }[];
     systemPrompt?: string;
     temperature?: number;
   };
@@ -138,6 +170,8 @@ export interface UpdateAssistantRequest {
   serverUrlSecret?: string;
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
+  analysisPlan?: VapiAnalysisPlan;
+  tools?: VapiTool[];
   metadata?: Record<string, unknown>;
 }
 

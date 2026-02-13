@@ -8,10 +8,12 @@ import {
   Bot,
   Phone,
   PhoneCall,
+  CalendarDays,
   Settings,
   CreditCard,
   Users,
   Key,
+  BookOpen,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -50,6 +52,11 @@ const navigation = [
     href: "/calls",
     icon: PhoneCall,
   },
+  {
+    name: "Calendar",
+    href: "/calendar",
+    icon: CalendarDays,
+  },
 ];
 
 const secondaryNavigation = [
@@ -62,6 +69,11 @@ const secondaryNavigation = [
     name: "API Keys",
     href: "/settings/api-keys",
     icon: Key,
+  },
+  {
+    name: "Knowledge Base",
+    href: "/settings/knowledge",
+    icon: BookOpen,
   },
   {
     name: "Billing",

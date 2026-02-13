@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
+import { calendarTools } from "@/lib/calendar/cal-com";
+import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
+import type { PromptConfig } from "@/lib/prompt-builder/types";
+import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 
 interface Membership {
@@ -17,6 +21,8 @@ const createAssistantSchema = z.object({
   modelProvider: z.string().default("openai"),
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
+  promptConfig: promptConfigSchema.optional(),
+  settings: z.record(z.any()).optional(),
 });
 
 // Map common voice provider names to Vapi's expected values
@@ -103,6 +109,47 @@ export async function POST(request: Request) {
       timeoutSeconds: 20,
     } : undefined;
 
+    // Build analysis plan from prompt config if available
+    const analysisPlan = validatedData.promptConfig
+      ? buildAnalysisPlan(validatedData.promptConfig)
+      : null;
+
+    // Inject org knowledge base into the system prompt for Vapi
+    const aggregatedKB = await getAggregatedKnowledgeBase(
+      supabase,
+      membership.organization_id
+    );
+
+    let vapiSystemPrompt = validatedData.systemPrompt;
+    if (validatedData.promptConfig) {
+      const config = validatedData.promptConfig as PromptConfig;
+      const industry = validatedData.settings?.industry || "other";
+      vapiSystemPrompt = buildPromptFromConfig(config, {
+        businessName: validatedData.name,
+        industry,
+        knowledgeBase: aggregatedKB || undefined,
+      });
+    } else if (aggregatedKB) {
+      if (validatedData.systemPrompt.includes("{knowledge_base}")) {
+        vapiSystemPrompt = validatedData.systemPrompt.replace(
+          /{knowledge_base}/g,
+          aggregatedKB
+        );
+      } else {
+        vapiSystemPrompt = `${validatedData.systemPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
+      }
+    }
+
+    // Only include calendar tools if the org has a calendar integration
+    const { data: calIntegration } = await (supabase as any)
+      .from("calendar_integrations")
+      .select("id")
+      .eq("organization_id", membership.organization_id)
+      .eq("is_active", true)
+      .limit(1);
+
+    const hasCalendar = calIntegration && calIntegration.length > 0;
+
     // Create assistant in Vapi
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
@@ -110,7 +157,7 @@ export async function POST(request: Request) {
       model: {
         provider: validatedData.modelProvider,
         model: validatedData.model,
-        systemPrompt: validatedData.systemPrompt,
+        messages: [{ role: "system", content: vapiSystemPrompt }],
       },
       voice: {
         provider: normalizeVoiceProvider(validatedData.voiceProvider),
@@ -124,6 +171,14 @@ export async function POST(request: Request) {
       },
       server: serverConfig,
       recordingEnabled: true,
+      ...(hasCalendar && {
+        tools: [
+          calendarTools.checkAvailability,
+          calendarTools.bookAppointment,
+          calendarTools.cancelAppointment,
+        ],
+      }),
+      ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,
       },
@@ -145,6 +200,8 @@ export async function POST(request: Request) {
         knowledge_base: validatedData.knowledgeBase,
         tools: validatedData.tools,
         is_active: true,
+        prompt_config: validatedData.promptConfig || null,
+        settings: validatedData.settings || {},
       })
       .select()
       .single();

@@ -5,6 +5,8 @@
  * the AI assistant with business-specific knowledge.
  */
 
+import { isUrlAllowed } from "@/lib/security/validation";
+
 export interface ScrapedPage {
   url: string;
   title: string;
@@ -208,37 +210,61 @@ function shouldExclude(url: string, excludePatterns: string[]): boolean {
 }
 
 /**
- * Fetch a single page
+ * Fetch a single page with SSRF-safe redirect handling.
+ * Redirects are followed manually so each target is validated against the
+ * internal-network blocklist.
  */
-async function fetchPage(url: string, timeout: number): Promise<string | null> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promise<string | null> {
+  let currentUrl = url;
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'HolaRecep-KnowledgeBase-Bot/1.0 (AI Receptionist Setup)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
+  for (let i = 0; i <= maxRedirects; i++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    clearTimeout(timeoutId);
+      const response = await fetch(currentUrl, {
+        signal: controller.signal,
+        redirect: "manual",
+        headers: {
+          'User-Agent': 'HolaRecep-KnowledgeBase-Bot/1.0 (AI Receptionist Setup)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
 
-    if (!response.ok) {
+      clearTimeout(timeoutId);
+
+      // Handle redirects manually — validate each target
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) return null;
+
+        const redirectUrl = new URL(location, currentUrl).href;
+        if (!isUrlAllowed(redirectUrl)) {
+          console.warn(`Blocked redirect to disallowed URL: ${redirectUrl}`);
+          return null;
+        }
+        currentUrl = redirectUrl;
+        continue;
+      }
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('text/html')) {
+        return null;
+      }
+
+      return await response.text();
+    } catch (error) {
+      console.error(`Error fetching ${currentUrl}:`, error);
       return null;
     }
-
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('text/html')) {
-      return null;
-    }
-
-    return await response.text();
-  } catch (error) {
-    console.error(`Error fetching ${url}:`, error);
-    return null;
   }
+
+  console.warn(`Too many redirects for ${url}`);
+  return null;
 }
 
 /**
@@ -281,6 +307,11 @@ export async function scrapeWebsite(
     }
 
     visited.add(currentUrl);
+
+    // SSRF protection: validate every URL before fetching (not just the initial one)
+    if (!isUrlAllowed(currentUrl)) {
+      continue;
+    }
 
     // Fetch the page
     const html = await fetchPage(currentUrl, opts.timeout || 30000);

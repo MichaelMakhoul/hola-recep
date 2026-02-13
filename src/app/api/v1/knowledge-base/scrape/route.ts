@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
-import { isUrlAllowed, isValidUUID } from "@/lib/security/validation";
+import { isUrlAllowed } from "@/lib/security/validation";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import { resyncOrgAssistants } from "@/lib/knowledge-base";
 
 /**
  * POST /api/v1/knowledge-base/scrape
@@ -11,7 +12,7 @@ import { withRateLimit } from "@/lib/security/rate-limiter";
  *
  * Body:
  * - url: string (required) - The website URL to scrape
- * - assistantId: string (optional) - Associate with an assistant
+ * - title: string (optional) - Title for the KB entry (defaults to domain name)
  * - maxPages: number (optional) - Maximum pages to scrape (default: 20)
  */
 export async function POST(request: NextRequest) {
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { url, assistantId, maxPages = 20 } = body;
+    const { url, title, maxPages = 20 } = body;
 
     if (!url) {
       return NextResponse.json(
@@ -85,31 +86,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate assistantId format if provided
-    if (assistantId && !isValidUUID(assistantId)) {
-      return NextResponse.json(
-        { error: "Invalid assistant ID format" },
-        { status: 400 }
-      );
-    }
-
-    // If assistantId provided, verify it belongs to the organization
-    if (assistantId) {
-      const { data: assistant, error: assistantError } = await (supabase as any)
-        .from("assistants")
-        .select("id")
-        .eq("id", assistantId)
-        .eq("organization_id", organizationId)
-        .single();
-
-      if (assistantError || !assistant) {
-        return NextResponse.json(
-          { error: "Assistant not found or access denied" },
-          { status: 404 }
-        );
-      }
-    }
-
     // Scrape the website
     const scrapedData = await scrapeWebsite(url, {
       maxPages: Math.min(maxPages, 50), // Cap at 50 pages
@@ -119,32 +95,54 @@ export async function POST(request: NextRequest) {
     // Generate knowledge base content
     const knowledgeBaseContent = generateKnowledgeBase(scrapedData);
 
-    // If assistantId provided, save to knowledge_bases table
-    if (assistantId) {
-      const { error: insertError } = await (supabase as any)
-        .from("knowledge_bases")
-        .insert({
-          organization_id: organizationId,
-          assistant_id: assistantId,
-          source_type: "website",
-          source_url: url,
-          content: knowledgeBaseContent,
-          metadata: {
-            totalPages: scrapedData.totalPages,
-            scrapedAt: scrapedData.scrapedAt,
-            businessInfo: scrapedData.businessInfo,
-          },
-          is_active: true,
-        });
-
-      if (insertError) {
-        console.error("Failed to save knowledge base:", insertError);
-        // Don't fail the request, still return the scraped content
+    // Derive title from domain if not provided
+    let entryTitle = title;
+    if (!entryTitle) {
+      try {
+        entryTitle = new URL(url).hostname.replace(/^www\./, "");
+      } catch {
+        entryTitle = "Website Import";
       }
+    }
+
+    // Save as org-level KB entry (no assistant_id)
+    const { error: insertError } = await (supabase as any)
+      .from("knowledge_bases")
+      .insert({
+        organization_id: organizationId,
+        assistant_id: null,
+        title: entryTitle,
+        source_type: "website",
+        source_url: url,
+        content: knowledgeBaseContent,
+        metadata: {
+          totalPages: scrapedData.totalPages,
+          scrapedAt: scrapedData.scrapedAt,
+          businessInfo: scrapedData.businessInfo,
+        },
+        is_active: true,
+      });
+
+    if (insertError) {
+      console.error("Failed to save knowledge base:", insertError);
+      return NextResponse.json(
+        { error: "Scraped successfully but failed to save. Please try again." },
+        { status: 500 }
+      );
+    }
+
+    // Resync all org assistants with updated KB
+    let resyncWarning: string | undefined;
+    try {
+      await resyncOrgAssistants(supabase, organizationId);
+    } catch (err) {
+      console.error("Failed to resync assistants:", err);
+      resyncWarning = "Knowledge base saved, but assistants may take a moment to reflect changes.";
     }
 
     return NextResponse.json({
       success: true,
+      ...(resyncWarning && { warning: resyncWarning }),
       data: {
         url: scrapedData.baseUrl,
         totalPages: scrapedData.totalPages,

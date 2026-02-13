@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
-import { Settings, Users, Key, Building, Bell, Calendar, Globe } from "lucide-react";
+import { Settings, Users, Key, Building, Bell, Calendar, Globe, BookOpen } from "lucide-react";
 import { BusinessSettingsForm } from "./business-settings-form";
 
 export const metadata: Metadata = {
@@ -104,6 +104,12 @@ export default async function SettingsPage() {
       description: "Calendar integration",
       href: "/settings/calendar",
       icon: Calendar,
+    },
+    {
+      title: "Knowledge Base",
+      description: "AI knowledge sources",
+      href: "/settings/knowledge",
+      icon: BookOpen,
     },
     ...(isOwnerOrAdmin
       ? [

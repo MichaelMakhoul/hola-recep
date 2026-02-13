@@ -29,19 +29,17 @@ import {
   ArrowLeft,
   Bot,
   Mic,
-  Brain,
   Phone,
-  Calendar,
   ShieldAlert,
   BookOpen,
   Settings,
   Loader2,
   Plus,
   Trash2,
-  ExternalLink,
-  Globe,
 } from "lucide-react";
 import { getIndustryTemplates } from "@/lib/templates";
+import { PromptBuilder } from "@/components/prompt-builder";
+import type { PromptConfig } from "@/lib/prompt-builder/types";
 
 // Voice options
 const VOICE_OPTIONS = [
@@ -76,8 +74,10 @@ interface Assistant {
   model_provider: string;
   is_active: boolean;
   settings: Record<string, any>;
+  prompt_config: Record<string, any> | null;
   vapi_assistant_id: string | null;
   phone_numbers?: { id: string; phone_number: string }[];
+  organization_id?: string;
 }
 
 interface TransferRule {
@@ -92,36 +92,16 @@ interface TransferRule {
   is_active: boolean;
 }
 
-interface KnowledgeBase {
-  id: string;
-  source_type: string;
-  source_url: string | null;
-  content: string;
-  is_active: boolean;
-}
-
-interface CalendarIntegration {
-  id: string;
-  provider: string;
-  calendar_id: string | null;
-  booking_url: string | null;
-  is_active: boolean;
-}
-
 interface AssistantBuilderProps {
   assistant: Assistant;
   organizationId: string;
   transferRules: TransferRule[];
-  knowledgeBases: KnowledgeBase[];
-  calendarIntegration: CalendarIntegration | null;
 }
 
 export function AssistantBuilder({
   assistant,
   organizationId,
   transferRules: initialTransferRules,
-  knowledgeBases: initialKnowledgeBases,
-  calendarIntegration,
 }: AssistantBuilderProps) {
   const router = useRouter();
   const { toast } = useToast();
@@ -148,10 +128,13 @@ export function AssistantBuilder({
   const [newTransferPhone, setNewTransferPhone] = useState("");
   const [newTransferName, setNewTransferName] = useState("");
 
-  // Knowledge base state
-  const [knowledgeBases, setKnowledgeBases] = useState(initialKnowledgeBases);
-  const [websiteUrl, setWebsiteUrl] = useState("");
-  const [isScrapingWebsite, setIsScrapingWebsite] = useState(false);
+  // Prompt builder state
+  const [promptConfig, setPromptConfig] = useState<PromptConfig | null>(
+    (assistant.prompt_config as PromptConfig) || null
+  );
+  const [useGuidedBuilder, setUseGuidedBuilder] = useState(
+    assistant.prompt_config !== null
+  );
 
   // Saving state
   const [isSaving, setIsSaving] = useState(false);
@@ -190,6 +173,7 @@ export function AssistantBuilder({
             maxCallDuration,
             spamFilterEnabled,
           },
+          promptConfig: useGuidedBuilder ? promptConfig : null,
         }),
       });
 
@@ -285,62 +269,6 @@ export function AssistantBuilder({
     }
   };
 
-  // Scrape website for knowledge base
-  const scrapeWebsite = async () => {
-    if (!websiteUrl) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Please enter a website URL.",
-      });
-      return;
-    }
-
-    setIsScrapingWebsite(true);
-    try {
-      const response = await fetch("/api/v1/knowledge-base/scrape", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: websiteUrl,
-          assistantId: assistant.id,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to scrape website");
-      }
-
-      const { data } = await response.json();
-
-      // Update local state
-      const newKb: KnowledgeBase = {
-        id: Date.now().toString(), // Temporary ID
-        source_type: "website",
-        source_url: websiteUrl,
-        content: data.content,
-        is_active: true,
-      };
-      setKnowledgeBases([...knowledgeBases, newKb]);
-      setWebsiteUrl("");
-
-      toast({
-        title: "Website Imported",
-        description: `Imported ${data.totalPages} pages from your website.`,
-      });
-
-      router.refresh();
-    } catch {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to import from website. Please check the URL and try again.",
-      });
-    } finally {
-      setIsScrapingWebsite(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -379,14 +307,10 @@ export function AssistantBuilder({
 
       {/* Tabs */}
       <Tabs defaultValue="basics" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="basics" className="flex items-center gap-2">
             <Bot className="h-4 w-4" />
             Basics
-          </TabsTrigger>
-          <TabsTrigger value="knowledge" className="flex items-center gap-2">
-            <BookOpen className="h-4 w-4" />
-            Knowledge
           </TabsTrigger>
           <TabsTrigger value="voice" className="flex items-center gap-2">
             <Mic className="h-4 w-4" />
@@ -395,10 +319,6 @@ export function AssistantBuilder({
           <TabsTrigger value="transfers" className="flex items-center gap-2">
             <Phone className="h-4 w-4" />
             Transfers
-          </TabsTrigger>
-          <TabsTrigger value="calendar" className="flex items-center gap-2">
-            <Calendar className="h-4 w-4" />
-            Calendar
           </TabsTrigger>
           <TabsTrigger value="settings" className="flex items-center gap-2">
             <Settings className="h-4 w-4" />
@@ -460,110 +380,75 @@ export function AssistantBuilder({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <Select onValueChange={applyTemplate}>
-                  <SelectTrigger className="w-[200px]">
-                    <SelectValue placeholder="Apply Template" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {INDUSTRY_TEMPLATES.map((template) => (
-                      <SelectItem key={template.industry} value={template.industry}>
-                        {template.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-sm text-muted-foreground self-center">
-                  Start with an industry template and customize
-                </p>
-              </div>
-
-              <Textarea
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                rows={15}
-                placeholder="Describe how the assistant should behave..."
-                className="font-mono text-sm"
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Knowledge Tab */}
-        <TabsContent value="knowledge" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Globe className="h-5 w-5" />
-                Import from Website
-              </CardTitle>
-              <CardDescription>
-                Automatically extract business information from your website
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="https://yourbusiness.com"
-                  value={websiteUrl}
-                  onChange={(e) => setWebsiteUrl(e.target.value)}
-                  className="flex-1"
+              {useGuidedBuilder ? (
+                <PromptBuilder
+                  config={promptConfig}
+                  industry="other"
+                  businessName={name}
+                  systemPrompt={systemPrompt}
+                  firstMessage={firstMessage}
+                  onChange={(updates) => {
+                    setSystemPrompt(updates.systemPrompt);
+                    setFirstMessage(updates.firstMessage);
+                    setPromptConfig(updates.promptConfig);
+                  }}
+                  variant="dashboard"
                 />
-                <Button
-                  onClick={scrapeWebsite}
-                  disabled={isScrapingWebsite || !websiteUrl}
-                >
-                  {isScrapingWebsite ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Importing...
-                    </>
-                  ) : (
-                    "Import"
-                  )}
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                We'll extract services, FAQs, contact info, and business hours from your website
-              </p>
+              ) : (
+                <>
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950/50 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                          Try the Guided Prompt Builder
+                        </p>
+                        <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
+                          Configure your assistant visually — pick fields, toggle behaviors, and choose a tone without writing prompts.
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => {
+                          setUseGuidedBuilder(true);
+                          // Keep existing prompt in advanced editor
+                        }}
+                      >
+                        Switch to Guided
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Select onValueChange={applyTemplate}>
+                      <SelectTrigger className="w-[200px]">
+                        <SelectValue placeholder="Apply Template" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {INDUSTRY_TEMPLATES.map((template) => (
+                          <SelectItem key={template.industry} value={template.industry}>
+                            {template.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-sm text-muted-foreground self-center">
+                      Start with an industry template and customize
+                    </p>
+                  </div>
+
+                  <Textarea
+                    value={systemPrompt}
+                    onChange={(e) => setSystemPrompt(e.target.value)}
+                    rows={15}
+                    placeholder="Describe how the assistant should behave..."
+                    className="font-mono text-sm"
+                  />
+                </>
+              )}
             </CardContent>
           </Card>
-
-          {knowledgeBases.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Knowledge Sources</CardTitle>
-                <CardDescription>
-                  Information your AI uses to answer questions
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {knowledgeBases.map((kb) => (
-                    <div
-                      key={kb.id}
-                      className="flex items-center justify-between p-3 border rounded-lg"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Globe className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <p className="font-medium capitalize">{kb.source_type}</p>
-                          {kb.source_url && (
-                            <p className="text-xs text-muted-foreground">
-                              {kb.source_url}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <Badge variant={kb.is_active ? "success" : "secondary"}>
-                        {kb.is_active ? "Active" : "Inactive"}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </TabsContent>
 
         {/* Voice Tab */}
@@ -694,58 +579,6 @@ export function AssistantBuilder({
           </Card>
         </TabsContent>
 
-        {/* Calendar Tab */}
-        <TabsContent value="calendar" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Calendar className="h-5 w-5" />
-                Calendar Integration
-              </CardTitle>
-              <CardDescription>
-                Let your AI book appointments directly into your calendar
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {calendarIntegration ? (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between p-4 bg-green-50 dark:bg-green-950 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <Calendar className="h-5 w-5 text-green-600" />
-                      <div>
-                        <p className="font-medium">Cal.com Connected</p>
-                        <p className="text-sm text-muted-foreground">
-                          Your AI can book appointments automatically
-                        </p>
-                      </div>
-                    </div>
-                    <Badge variant="success">Active</Badge>
-                  </div>
-                  <Link href="/settings/calendar">
-                    <Button variant="outline">
-                      Manage Calendar Settings
-                      <ExternalLink className="h-4 w-4 ml-2" />
-                    </Button>
-                  </Link>
-                </div>
-              ) : (
-                <div className="text-center py-6">
-                  <Calendar className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                  <p className="text-muted-foreground mb-4">
-                    Connect your calendar to enable automatic appointment booking
-                  </p>
-                  <Link href="/settings/calendar">
-                    <Button>
-                      Connect Calendar
-                      <ExternalLink className="h-4 w-4 ml-2" />
-                    </Button>
-                  </Link>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         {/* Settings Tab */}
         <TabsContent value="settings" className="space-y-6">
           <Card>
@@ -788,6 +621,23 @@ export function AssistantBuilder({
                   onCheckedChange={setSpamFilterEnabled}
                 />
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BookOpen className="h-5 w-5" />
+                Knowledge Base
+              </CardTitle>
+              <CardDescription>
+                Manage the business information your AI uses to answer questions
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link href="/settings/knowledge">
+                <Button variant="outline">Manage Knowledge Sources</Button>
+              </Link>
             </CardContent>
           </Card>
 

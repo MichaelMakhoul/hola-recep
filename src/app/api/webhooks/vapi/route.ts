@@ -5,6 +5,11 @@ import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
 import { sendMissedCallNotification, sendVoicemailNotification } from "@/lib/notifications/notification-service";
 import { incrementCallUsage, canMakeCall } from "@/lib/stripe/billing-service";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import {
+  handleBookAppointment,
+  handleCheckAvailability,
+  handleCancelAppointment,
+} from "@/lib/calendar/tool-handlers";
 
 // Verify Vapi webhook signature
 function verifySignature(payload: string, signature: string | null): boolean {
@@ -22,6 +27,15 @@ function verifySignature(payload: string, signature: string | null): boolean {
   if (sigBuffer.length !== expectedBuffer.length) return false;
 
   return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+}
+
+interface VapiToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: Record<string, unknown> | string;
+  };
 }
 
 interface VapiCallEvent {
@@ -44,11 +58,14 @@ interface VapiCallEvent {
       recordingUrl?: string;
       summary?: string;
       cost?: number;
+      metadata?: Record<string, unknown>;
       analysis?: {
         summary?: string;
         structuredData?: Record<string, unknown>;
+        successEvaluation?: string;
       };
     };
+    toolCallList?: VapiToolCall[];
     transcript?: string;
     artifact?: {
       transcript?: string;
@@ -146,7 +163,7 @@ export async function POST(request: Request) {
         }
 
         // Create call record
-        await (supabase.from("calls") as any).insert({
+        const { error: insertError } = await (supabase.from("calls") as any).insert({
           organization_id: phoneNumber.organization_id,
           assistant_id: assistantId,
           phone_number_id: phoneNumber.id,
@@ -156,6 +173,18 @@ export async function POST(request: Request) {
           status: mapStatus(call.status),
           started_at: call.startedAt,
         });
+
+        if (insertError) {
+          console.error("Failed to create call record:", {
+            vapiCallId: call.id,
+            organizationId: phoneNumber.organization_id,
+            error: insertError,
+          });
+          return NextResponse.json(
+            { error: "Failed to record call" },
+            { status: 500 }
+          );
+        }
 
         break;
       }
@@ -228,8 +257,18 @@ export async function POST(request: Request) {
           ? "busy"
           : "completed";
 
-        // Update call record with spam analysis
-        await (supabase
+        // Extract structured caller data from Vapi analysis
+        const collectedData = call.analysis?.structuredData ?? null;
+        const successEvaluation = call.analysis?.successEvaluation ?? null;
+
+        // Extract caller_name from structured data if available
+        const callerName =
+          (collectedData as Record<string, unknown> | null)?.full_name as string | undefined ??
+          (collectedData as Record<string, unknown> | null)?.name as string | undefined ??
+          null;
+
+        // Update call record with spam analysis and collected data
+        const { error: updateError } = await (supabase
           .from("calls") as any)
           .update({
             status: callStatus,
@@ -241,9 +280,12 @@ export async function POST(request: Request) {
             cost_cents: cost ? Math.round(cost * 100) : null,
             is_spam: spamAnalysis?.isSpam ?? false,
             spam_score: spamAnalysis?.spamScore ?? null,
+            ...(collectedData && { collected_data: collectedData }),
+            ...(callerName && { caller_name: callerName }),
             metadata: {
               endedReason: call.endedReason,
               analysis: call.analysis,
+              successEvaluation,
               spamAnalysis: spamAnalysis ? {
                 reasons: spamAnalysis.reasons,
                 confidence: spamAnalysis.confidence,
@@ -252,6 +294,13 @@ export async function POST(request: Request) {
             },
           })
           .eq("vapi_call_id", call.id);
+
+        if (updateError) {
+          console.error("Failed to update call record:", {
+            vapiCallId: call.id,
+            error: updateError,
+          });
+        }
 
         // Increment call usage for billing (skip for spam calls)
         // Using call-based pricing: each answered call counts as 1, regardless of duration
@@ -323,6 +372,105 @@ export async function POST(request: Request) {
           .eq("vapi_call_id", call.id);
 
         break;
+      }
+
+      case "tool-calls": {
+        const toolCallList = event.message.toolCallList;
+        const call = event.message.call;
+        if (!toolCallList || !call) {
+          return NextResponse.json({ results: [] });
+        }
+
+        // Get organizationId from call metadata or DB lookup
+        let organizationId =
+          (call.metadata?.organizationId as string) || null;
+
+        if (!organizationId) {
+          const { data: existingCall, error: callError } = await (supabase
+            .from("calls") as any)
+            .select("organization_id")
+            .eq("vapi_call_id", call.id)
+            .single();
+
+          if (callError) {
+            console.error("DB error looking up call for org ID:", callError);
+          }
+          organizationId = existingCall?.organization_id || null;
+        }
+
+        if (!organizationId) {
+          // Last resort: look up via phone number
+          const { data: phoneNumber, error: phoneError } = await (supabase
+            .from("phone_numbers") as any)
+            .select("organization_id")
+            .eq("vapi_phone_number_id", call.phoneNumberId)
+            .single();
+
+          if (phoneError) {
+            console.error("DB error looking up phone number for org ID:", phoneError);
+          }
+          organizationId = phoneNumber?.organization_id || null;
+        }
+
+        if (!organizationId) {
+          console.error("Could not determine organization for tool call, call ID:", call.id);
+          return NextResponse.json({
+            results: toolCallList.map((tc) => ({
+              toolCallId: tc.id,
+              result: "I'm sorry, I'm having a technical issue right now. Please try again.",
+            })),
+          });
+        }
+
+        const results = [];
+
+        for (const toolCall of toolCallList) {
+          let args: Record<string, unknown>;
+          try {
+            args =
+              typeof toolCall.function.arguments === "string"
+                ? JSON.parse(toolCall.function.arguments)
+                : toolCall.function.arguments;
+          } catch (parseError) {
+            console.error("Failed to parse tool call arguments:", {
+              toolCallId: toolCall.id,
+              functionName: toolCall.function.name,
+              error: parseError,
+            });
+            results.push({
+              toolCallId: toolCall.id,
+              result: "I'm sorry, I had trouble understanding that request. Could you try again?",
+            });
+            continue;
+          }
+
+          let result: { success: boolean; message: string };
+
+          switch (toolCall.function.name) {
+            case "book_appointment":
+              result = await handleBookAppointment(organizationId, args);
+              break;
+            case "check_availability":
+              result = await handleCheckAvailability(organizationId, args);
+              break;
+            case "cancel_appointment":
+              result = await handleCancelAppointment(organizationId, args);
+              break;
+            default:
+              console.log("Unknown tool call:", toolCall.function.name);
+              result = {
+                success: false,
+                message: "I'm sorry, I can't perform that action right now.",
+              };
+          }
+
+          results.push({
+            toolCallId: toolCall.id,
+            result: result.message,
+          });
+        }
+
+        return NextResponse.json({ results });
       }
 
       default:

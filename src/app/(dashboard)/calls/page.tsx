@@ -23,6 +23,10 @@ interface Call {
   direction: string;
   status: string;
   caller_phone: string | null;
+  caller_name: string | null;
+  outcome: string | null;
+  collected_data: Record<string, unknown> | null;
+  metadata: { successEvaluation?: string } | null;
   duration_seconds: number | null;
   recording_url: string | null;
   created_at: string;
@@ -210,6 +214,7 @@ function CallsTable({
           <TableHead>Caller</TableHead>
           <TableHead>Assistant</TableHead>
           <TableHead>Status</TableHead>
+          <TableHead>Result</TableHead>
           {isSpamView && <TableHead>Spam Score</TableHead>}
           <TableHead>Duration</TableHead>
           <TableHead>Date</TableHead>
@@ -230,11 +235,16 @@ function CallsTable({
               <div className="flex items-center gap-2">
                 <div>
                   <p className="font-medium">
-                    {call.caller_phone
+                    {call.caller_name || (call.caller_phone
                       ? formatPhoneNumber(call.caller_phone)
-                      : "Unknown"}
+                      : "Unknown")}
                   </p>
-                  {call.phone_numbers && (
+                  {call.caller_name && call.caller_phone && (
+                    <p className="text-xs text-muted-foreground">
+                      {formatPhoneNumber(call.caller_phone)}
+                    </p>
+                  )}
+                  {!call.caller_name && call.phone_numbers && (
                     <p className="text-xs text-muted-foreground">
                       to {formatPhoneNumber(call.phone_numbers.phone_number)}
                     </p>
@@ -263,6 +273,26 @@ function CallsTable({
               >
                 {call.status}
               </Badge>
+            </TableCell>
+            <TableCell>
+              {call.metadata?.successEvaluation ? (
+                <Badge
+                  variant={
+                    call.metadata.successEvaluation.toLowerCase() === "pass" ||
+                    call.metadata.successEvaluation.toLowerCase() === "passed" ||
+                    call.metadata.successEvaluation.toLowerCase() === "success"
+                      ? "success"
+                      : call.metadata.successEvaluation.toLowerCase() === "fail" ||
+                        call.metadata.successEvaluation.toLowerCase() === "failed"
+                      ? "destructive"
+                      : "secondary"
+                  }
+                >
+                  {call.metadata.successEvaluation}
+                </Badge>
+              ) : (
+                "-"
+              )}
             </TableCell>
             {isSpamView && (
               <TableCell>

@@ -1,0 +1,1 @@
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS collected_data JSONB;
