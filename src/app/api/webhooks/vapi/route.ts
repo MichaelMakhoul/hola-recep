@@ -5,6 +5,11 @@ import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
 import { sendMissedCallNotification, sendVoicemailNotification } from "@/lib/notifications/notification-service";
 import { incrementCallUsage, canMakeCall } from "@/lib/stripe/billing-service";
 import { withRateLimit } from "@/lib/security/rate-limiter";
+import {
+  handleBookAppointment,
+  handleCheckAvailability,
+  handleCancelAppointment,
+} from "@/lib/calendar/tool-handlers";
 
 // Verify Vapi webhook signature
 function verifySignature(payload: string, signature: string | null): boolean {
@@ -22,6 +27,15 @@ function verifySignature(payload: string, signature: string | null): boolean {
   if (sigBuffer.length !== expectedBuffer.length) return false;
 
   return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+}
+
+interface VapiToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: Record<string, unknown> | string;
+  };
 }
 
 interface VapiCallEvent {
@@ -44,11 +58,14 @@ interface VapiCallEvent {
       recordingUrl?: string;
       summary?: string;
       cost?: number;
+      metadata?: Record<string, unknown>;
       analysis?: {
         summary?: string;
         structuredData?: Record<string, unknown>;
+        successEvaluation?: string;
       };
     };
+    toolCallList?: VapiToolCall[];
     transcript?: string;
     artifact?: {
       transcript?: string;
@@ -228,7 +245,17 @@ export async function POST(request: Request) {
           ? "busy"
           : "completed";
 
-        // Update call record with spam analysis
+        // Extract structured caller data from Vapi analysis
+        const collectedData = call.analysis?.structuredData ?? null;
+        const successEvaluation = call.analysis?.successEvaluation ?? null;
+
+        // Extract caller_name from structured data if available
+        const callerName =
+          (collectedData as Record<string, unknown> | null)?.full_name as string | undefined ??
+          (collectedData as Record<string, unknown> | null)?.name as string | undefined ??
+          null;
+
+        // Update call record with spam analysis and collected data
         await (supabase
           .from("calls") as any)
           .update({
@@ -241,9 +268,12 @@ export async function POST(request: Request) {
             cost_cents: cost ? Math.round(cost * 100) : null,
             is_spam: spamAnalysis?.isSpam ?? false,
             spam_score: spamAnalysis?.spamScore ?? null,
+            ...(collectedData && { collected_data: collectedData }),
+            ...(callerName && { caller_name: callerName }),
             metadata: {
               endedReason: call.endedReason,
               analysis: call.analysis,
+              successEvaluation,
               spamAnalysis: spamAnalysis ? {
                 reasons: spamAnalysis.reasons,
                 confidence: spamAnalysis.confidence,
@@ -323,6 +353,83 @@ export async function POST(request: Request) {
           .eq("vapi_call_id", call.id);
 
         break;
+      }
+
+      case "tool-calls": {
+        const toolCallList = event.message.toolCallList;
+        const call = event.message.call;
+        if (!toolCallList || !call) break;
+
+        // Get organizationId from call metadata or DB lookup
+        let organizationId =
+          (call.metadata?.organizationId as string) || null;
+
+        if (!organizationId) {
+          const { data: existingCall } = await (supabase
+            .from("calls") as any)
+            .select("organization_id")
+            .eq("vapi_call_id", call.id)
+            .single();
+
+          organizationId = existingCall?.organization_id || null;
+        }
+
+        if (!organizationId) {
+          // Last resort: look up via phone number
+          const { data: phoneNumber } = await (supabase
+            .from("phone_numbers") as any)
+            .select("organization_id")
+            .eq("vapi_phone_number_id", call.phoneNumberId)
+            .single();
+
+          organizationId = phoneNumber?.organization_id || null;
+        }
+
+        if (!organizationId) {
+          console.error("Could not determine organization for tool call, call ID:", call.id);
+          return NextResponse.json({
+            results: toolCallList.map((tc) => ({
+              toolCallId: tc.id,
+              result: "I'm sorry, I'm having a technical issue right now. Please try again.",
+            })),
+          });
+        }
+
+        const results = [];
+
+        for (const toolCall of toolCallList) {
+          const args =
+            typeof toolCall.function.arguments === "string"
+              ? JSON.parse(toolCall.function.arguments)
+              : toolCall.function.arguments;
+
+          let result: { success: boolean; message: string };
+
+          switch (toolCall.function.name) {
+            case "book_appointment":
+              result = await handleBookAppointment(organizationId, args);
+              break;
+            case "check_availability":
+              result = await handleCheckAvailability(organizationId, args);
+              break;
+            case "cancel_appointment":
+              result = await handleCancelAppointment(organizationId, args);
+              break;
+            default:
+              console.log("Unknown tool call:", toolCall.function.name);
+              result = {
+                success: false,
+                message: "I'm sorry, I can't perform that action right now.",
+              };
+          }
+
+          results.push({
+            toolCallId: toolCall.id,
+            result: result.message,
+          });
+        }
+
+        return NextResponse.json({ results });
       }
 
       default:

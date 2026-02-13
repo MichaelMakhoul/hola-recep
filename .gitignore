@@ -40,3 +40,6 @@ next-env.d.ts
 
 # Supabase
 .supabase
+
+# MCP config (contains secrets)
+.mcp.json

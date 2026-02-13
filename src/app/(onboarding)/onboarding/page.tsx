@@ -24,6 +24,7 @@ interface OnboardingData {
   systemPrompt: string;
   firstMessage: string;
   voiceId: string;
+  promptConfig: Record<string, any> | null;
   // Step 3: Test Call (no data, just completion state)
   testCallCompleted: boolean;
   // Step 4: Go Live
@@ -40,6 +41,7 @@ const initialData: OnboardingData = {
   systemPrompt: "",
   firstMessage: "",
   voiceId: "",
+  promptConfig: null,
   testCallCompleted: false,
   areaCode: "",
   selectedPlan: "",
@@ -189,6 +191,7 @@ export default function OnboardingPage() {
           voiceProvider: "11labs",
           model: "gpt-4o-mini",
           modelProvider: "openai",
+          promptConfig: data.promptConfig || undefined,
         }),
       });
 

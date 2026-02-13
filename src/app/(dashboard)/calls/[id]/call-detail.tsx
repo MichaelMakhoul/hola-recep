@@ -1,0 +1,434 @@
+"use client";
+
+import Link from "next/link";
+import { format } from "date-fns";
+import {
+  ArrowLeft,
+  PhoneIncoming,
+  PhoneOutgoing,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  DollarSign,
+  AlertTriangle,
+  ShieldAlert,
+  FileText,
+  Mic,
+  BarChart3,
+  Info,
+} from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { formatPhoneNumber, formatDuration, formatCurrency } from "@/lib/utils";
+
+interface Call {
+  id: string;
+  direction: string;
+  status: string;
+  caller_phone: string | null;
+  caller_name: string | null;
+  duration_seconds: number | null;
+  recording_url: string | null;
+  summary: string | null;
+  transcript: string | null;
+  outcome: string | null;
+  cost_cents: number | null;
+  follow_up_required: boolean | null;
+  ended_reason: string | null;
+  sentiment: string | null;
+  collected_data: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+  is_spam: boolean | null;
+  spam_score: number | null;
+  created_at: string;
+  assistants: { id: string; name: string } | null;
+  phone_numbers: {
+    id: string;
+    phone_number: string;
+    friendly_name: string | null;
+  } | null;
+}
+
+function formatFieldLabel(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function getSuccessVariant(
+  val: string | undefined
+): "success" | "destructive" | "secondary" {
+  if (!val) return "secondary";
+  const lower = val.toLowerCase();
+  if (lower === "pass" || lower === "passed" || lower === "success")
+    return "success";
+  if (lower === "fail" || lower === "failed") return "destructive";
+  return "secondary";
+}
+
+function getSentimentVariant(
+  val: string | undefined
+): "success" | "destructive" | "secondary" {
+  if (!val) return "secondary";
+  const lower = val.toLowerCase();
+  if (lower === "positive") return "success";
+  if (lower === "negative") return "destructive";
+  return "secondary";
+}
+
+export function CallDetail({ call }: { call: Call }) {
+  const successEval = call.metadata?.successEvaluation as string | undefined;
+  const collectedEntries = Object.entries(call.collected_data || {});
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <Link
+          href="/calls"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back to Calls
+        </Link>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl font-bold">Call Details</h1>
+          <Badge
+            variant={
+              call.status === "completed"
+                ? "success"
+                : call.status === "failed"
+                ? "destructive"
+                : call.status === "in-progress"
+                ? "default"
+                : "secondary"
+            }
+          >
+            {call.status}
+          </Badge>
+          {call.is_spam && (
+            <Badge variant="destructive">
+              <ShieldAlert className="h-3 w-3 mr-1" />
+              Spam
+            </Badge>
+          )}
+        </div>
+
+        <p className="text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
+          {call.direction === "inbound" ? (
+            <PhoneIncoming className="h-4 w-4" />
+          ) : (
+            <PhoneOutgoing className="h-4 w-4" />
+          )}
+          <span className="capitalize">{call.direction}</span>
+          {call.caller_name && (
+            <>
+              <span>&middot;</span>
+              <span>{call.caller_name}</span>
+            </>
+          )}
+          {call.caller_phone && (
+            <>
+              <span>&middot;</span>
+              <span>{formatPhoneNumber(call.caller_phone)}</span>
+            </>
+          )}
+          <span>&middot;</span>
+          <span>{format(new Date(call.created_at), "MMMM d, yyyy h:mm a")}</span>
+        </p>
+      </div>
+
+      {/* Overview Stats */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+              <Clock className="h-4 w-4" />
+              Duration
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">
+              {call.duration_seconds
+                ? formatDuration(call.duration_seconds)
+                : "-"}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Outcome
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {call.outcome ? (
+              <Badge variant="secondary" className="text-sm">
+                {call.outcome}
+              </Badge>
+            ) : (
+              <p className="text-2xl font-bold">-</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+              {successEval &&
+              getSuccessVariant(successEval) === "success" ? (
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+              ) : successEval &&
+                getSuccessVariant(successEval) === "destructive" ? (
+                <XCircle className="h-4 w-4 text-red-600" />
+              ) : null}
+              Success
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {successEval ? (
+              <Badge variant={getSuccessVariant(successEval)} className="text-sm">
+                {successEval}
+              </Badge>
+            ) : (
+              <p className="text-2xl font-bold">-</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+              <DollarSign className="h-4 w-4" />
+              Cost
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">
+              {call.cost_cents != null
+                ? formatCurrency(call.cost_cents)
+                : "-"}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Follow-up Alert */}
+      {call.follow_up_required && (
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Follow-Up Required</AlertTitle>
+          <AlertDescription>
+            This call has been flagged as requiring follow-up. Please review the
+            details and take appropriate action.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Main Content Grid */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Left Column */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Summary */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Call Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {call.summary ? (
+                <p className="text-sm leading-relaxed">{call.summary}</p>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No summary available for this call.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Collected Data */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Info className="h-5 w-5" />
+                Collected Information
+                {collectedEntries.length > 0 && (
+                  <Badge variant="secondary" className="ml-auto">
+                    {collectedEntries.length} field
+                    {collectedEntries.length !== 1 ? "s" : ""}
+                  </Badge>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {collectedEntries.length > 0 ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {collectedEntries.map(([key, value]) => (
+                    <div
+                      key={key}
+                      className="rounded-md border p-3"
+                    >
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                        {formatFieldLabel(key)}
+                      </p>
+                      <p className="mt-1 text-sm font-medium">
+                        {String(value ?? "-")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-8 text-center">
+                  <Info className="mx-auto h-8 w-8 text-muted-foreground" />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    No data was collected during this call.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Transcript */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Transcript
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {call.transcript ? (
+                <ScrollArea className="h-[400px]">
+                  <pre className="whitespace-pre-wrap font-sans text-sm">
+                    {call.transcript}
+                  </pre>
+                </ScrollArea>
+              ) : (
+                <div className="py-8 text-center">
+                  <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    No transcript available for this call.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Right Column */}
+        <div className="space-y-6">
+          {/* Recording */}
+          {call.recording_url && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mic className="h-5 w-5" />
+                  Recording
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <audio controls className="w-full" src={call.recording_url}>
+                  Your browser does not support the audio element.
+                </audio>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Analysis */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BarChart3 className="h-5 w-5" />
+                Analysis
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Sentiment */}
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">Sentiment</p>
+                {call.sentiment ? (
+                  <Badge variant={getSentimentVariant(call.sentiment)}>
+                    {call.sentiment}
+                  </Badge>
+                ) : (
+                  <span className="text-sm">-</span>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Spam Score */}
+              {call.is_spam && call.spam_score != null && (
+                <>
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">
+                      Spam Score
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full ${
+                            call.spam_score >= 70
+                              ? "bg-red-500"
+                              : call.spam_score >= 40
+                              ? "bg-orange-500"
+                              : "bg-yellow-500"
+                          }`}
+                          style={{ width: `${call.spam_score}%` }}
+                        />
+                      </div>
+                      <span className="text-sm font-medium">
+                        {call.spam_score}%
+                      </span>
+                    </div>
+                  </div>
+                  <Separator />
+                </>
+              )}
+
+              {/* Ended Reason */}
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">
+                  Ended Reason
+                </p>
+                <p className="text-sm">
+                  {call.ended_reason || "-"}
+                </p>
+              </div>
+
+              <Separator />
+
+              {/* Assistant */}
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">Assistant</p>
+                <p className="text-sm">
+                  {call.assistants?.name || "-"}
+                </p>
+              </div>
+
+              <Separator />
+
+              {/* Phone Line */}
+              <div>
+                <p className="text-sm text-muted-foreground mb-1">Phone Line</p>
+                <p className="text-sm">
+                  {call.phone_numbers
+                    ? call.phone_numbers.friendly_name ||
+                      formatPhoneNumber(call.phone_numbers.phone_number)
+                    : "-"}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}

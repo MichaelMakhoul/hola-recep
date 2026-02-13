@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
+import { calendarTools } from "@/lib/calendar/cal-com";
+import { buildAnalysisPlan, buildPromptFromConfig } from "@/lib/prompt-builder";
+import type { PromptConfig } from "@/lib/prompt-builder/types";
+import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 
 interface Membership {
@@ -10,12 +14,14 @@ interface Membership {
 
 interface Assistant {
   id: string;
+  name: string;
   vapi_assistant_id: string | null;
   model_provider: string;
   model: string;
   system_prompt: string;
   voice_provider: string;
   voice_id: string;
+  prompt_config: Record<string, any> | null;
 }
 
 const updateAssistantSchema = z.object({
@@ -29,6 +35,8 @@ const updateAssistantSchema = z.object({
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
+  promptConfig: z.any().optional(),
+  settings: z.record(z.any()).optional(),
 });
 
 // GET /api/v1/assistants/[id] - Get a single assistant
@@ -125,13 +133,42 @@ export async function PATCH(
       if (validatedData.name) {
         vapiUpdate.name = validatedData.name;
       }
-      if (validatedData.systemPrompt || validatedData.model || validatedData.modelProvider) {
+
+      // Inject org knowledge base into the system prompt for Vapi
+      const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
+      const promptConfig = validatedData.promptConfig !== undefined
+        ? validatedData.promptConfig
+        : currentAssistant.prompt_config;
+
+      if (validatedData.systemPrompt || validatedData.promptConfig !== undefined || validatedData.model || validatedData.modelProvider) {
+        const aggregatedKB = await getAggregatedKnowledgeBase(
+          supabase,
+          membership.organization_id
+        );
+
+        let vapiSystemPrompt = rawPrompt;
+        if (promptConfig) {
+          const config = promptConfig as PromptConfig;
+          vapiSystemPrompt = buildPromptFromConfig(config, {
+            businessName: validatedData.name || currentAssistant.name,
+            industry: "other",
+            knowledgeBase: aggregatedKB || undefined,
+          });
+        } else if (aggregatedKB) {
+          if (rawPrompt.includes("{knowledge_base}")) {
+            vapiSystemPrompt = rawPrompt.replace("{knowledge_base}", aggregatedKB);
+          } else {
+            vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
+          }
+        }
+
         vapiUpdate.model = {
           provider: validatedData.modelProvider || currentAssistant.model_provider,
           model: validatedData.model || currentAssistant.model,
-          systemPrompt: validatedData.systemPrompt || currentAssistant.system_prompt,
+          messages: [{ role: "system", content: vapiSystemPrompt }],
         };
       }
+
       if (validatedData.voiceId || validatedData.voiceProvider) {
         vapiUpdate.voice = {
           provider: validatedData.voiceProvider || currentAssistant.voice_provider,
@@ -142,7 +179,7 @@ export async function PATCH(
         vapiUpdate.firstMessage = validatedData.firstMessage;
       }
 
-      // Always ensure server URL is set for webhooks
+      // Always ensure server URL and tools are set
       const appUrl = process.env.NEXT_PUBLIC_APP_URL;
       const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
       if (appUrl) {
@@ -151,6 +188,20 @@ export async function PATCH(
           ...(webhookSecret && { secret: webhookSecret }),
           timeoutSeconds: 20,
         };
+      }
+
+      vapiUpdate.tools = [
+        calendarTools.checkAvailability,
+        calendarTools.bookAppointment,
+        calendarTools.cancelAppointment,
+      ];
+
+      // Build analysis plan from prompt config if provided
+      if (validatedData.promptConfig) {
+        const analysisPlan = buildAnalysisPlan(validatedData.promptConfig);
+        if (analysisPlan) {
+          vapiUpdate.analysisPlan = analysisPlan;
+        }
       }
 
       if (Object.keys(vapiUpdate).length > 0) {
@@ -170,6 +221,8 @@ export async function PATCH(
     if (validatedData.knowledgeBase !== undefined) updateData.knowledge_base = validatedData.knowledgeBase;
     if (validatedData.tools !== undefined) updateData.tools = validatedData.tools;
     if (validatedData.isActive !== undefined) updateData.is_active = validatedData.isActive;
+    if (validatedData.promptConfig !== undefined) updateData.prompt_config = validatedData.promptConfig;
+    if (validatedData.settings !== undefined) updateData.settings = validatedData.settings;
 
     const { data: assistant, error } = await (supabase
       .from("assistants") as any)

@@ -13,6 +13,7 @@ import {
   CreditCard,
   Users,
   Key,
+  BookOpen,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -68,6 +69,11 @@ const secondaryNavigation = [
     name: "API Keys",
     href: "/settings/api-keys",
     icon: Key,
+  },
+  {
+    name: "Knowledge Base",
+    href: "/settings/knowledge",
+    icon: BookOpen,
   },
   {
     name: "Billing",

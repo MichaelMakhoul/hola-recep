@@ -37,14 +37,6 @@ interface TransferRule {
   is_active: boolean;
 }
 
-interface KnowledgeBase {
-  id: string;
-  source_type: string;
-  source_url: string | null;
-  content: string;
-  is_active: boolean;
-}
-
 export default async function AssistantDetailPage({
   params,
 }: {
@@ -97,19 +89,11 @@ export default async function AssistantDetailPage({
     .eq("organization_id", organizationId)
     .order("priority", { ascending: false }) as { data: TransferRule[] | null };
 
-  // Get knowledge bases for this assistant
-  const { data: knowledgeBases } = await (supabase as any)
-    .from("knowledge_bases")
-    .select("id, source_type, source_url, content, is_active")
-    .eq("assistant_id", id)
-    .eq("organization_id", organizationId) as { data: KnowledgeBase[] | null };
-
   return (
     <AssistantBuilder
       assistant={assistant}
       organizationId={organizationId}
       transferRules={transferRules || []}
-      knowledgeBases={knowledgeBases || []}
     />
   );
 }

@@ -29,7 +29,6 @@ import {
   ArrowLeft,
   Bot,
   Mic,
-  Brain,
   Phone,
   ShieldAlert,
   BookOpen,
@@ -37,7 +36,6 @@ import {
   Loader2,
   Plus,
   Trash2,
-  Globe,
 } from "lucide-react";
 import { getIndustryTemplates } from "@/lib/templates";
 import { PromptBuilder } from "@/components/prompt-builder";
@@ -94,26 +92,16 @@ interface TransferRule {
   is_active: boolean;
 }
 
-interface KnowledgeBase {
-  id: string;
-  source_type: string;
-  source_url: string | null;
-  content: string;
-  is_active: boolean;
-}
-
 interface AssistantBuilderProps {
   assistant: Assistant;
   organizationId: string;
   transferRules: TransferRule[];
-  knowledgeBases: KnowledgeBase[];
 }
 
 export function AssistantBuilder({
   assistant,
   organizationId,
   transferRules: initialTransferRules,
-  knowledgeBases: initialKnowledgeBases,
 }: AssistantBuilderProps) {
   const router = useRouter();
   const { toast } = useToast();
@@ -139,11 +127,6 @@ export function AssistantBuilder({
   const [transferEnabled, setTransferEnabled] = useState(transferRules.length > 0);
   const [newTransferPhone, setNewTransferPhone] = useState("");
   const [newTransferName, setNewTransferName] = useState("");
-
-  // Knowledge base state
-  const [knowledgeBases, setKnowledgeBases] = useState(initialKnowledgeBases);
-  const [websiteUrl, setWebsiteUrl] = useState("");
-  const [isScrapingWebsite, setIsScrapingWebsite] = useState(false);
 
   // Prompt builder state
   const [promptConfig, setPromptConfig] = useState<PromptConfig | null>(
@@ -286,62 +269,6 @@ export function AssistantBuilder({
     }
   };
 
-  // Scrape website for knowledge base
-  const scrapeWebsite = async () => {
-    if (!websiteUrl) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Please enter a website URL.",
-      });
-      return;
-    }
-
-    setIsScrapingWebsite(true);
-    try {
-      const response = await fetch("/api/v1/knowledge-base/scrape", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: websiteUrl,
-          assistantId: assistant.id,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to scrape website");
-      }
-
-      const { data } = await response.json();
-
-      // Update local state
-      const newKb: KnowledgeBase = {
-        id: Date.now().toString(), // Temporary ID
-        source_type: "website",
-        source_url: websiteUrl,
-        content: data.content,
-        is_active: true,
-      };
-      setKnowledgeBases([...knowledgeBases, newKb]);
-      setWebsiteUrl("");
-
-      toast({
-        title: "Website Imported",
-        description: `Imported ${data.totalPages} pages from your website.`,
-      });
-
-      router.refresh();
-    } catch {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to import from website. Please check the URL and try again.",
-      });
-    } finally {
-      setIsScrapingWebsite(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -380,14 +307,10 @@ export function AssistantBuilder({
 
       {/* Tabs */}
       <Tabs defaultValue="basics" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="basics" className="flex items-center gap-2">
             <Bot className="h-4 w-4" />
             Basics
-          </TabsTrigger>
-          <TabsTrigger value="knowledge" className="flex items-center gap-2">
-            <BookOpen className="h-4 w-4" />
-            Knowledge
           </TabsTrigger>
           <TabsTrigger value="voice" className="flex items-center gap-2">
             <Mic className="h-4 w-4" />
@@ -526,83 +449,6 @@ export function AssistantBuilder({
               )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        {/* Knowledge Tab */}
-        <TabsContent value="knowledge" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Globe className="h-5 w-5" />
-                Import from Website
-              </CardTitle>
-              <CardDescription>
-                Automatically extract business information from your website
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <Input
-                  placeholder="https://yourbusiness.com"
-                  value={websiteUrl}
-                  onChange={(e) => setWebsiteUrl(e.target.value)}
-                  className="flex-1"
-                />
-                <Button
-                  onClick={scrapeWebsite}
-                  disabled={isScrapingWebsite || !websiteUrl}
-                >
-                  {isScrapingWebsite ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Importing...
-                    </>
-                  ) : (
-                    "Import"
-                  )}
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                We'll extract services, FAQs, contact info, and business hours from your website
-              </p>
-            </CardContent>
-          </Card>
-
-          {knowledgeBases.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Knowledge Sources</CardTitle>
-                <CardDescription>
-                  Information your AI uses to answer questions
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {knowledgeBases.map((kb) => (
-                    <div
-                      key={kb.id}
-                      className="flex items-center justify-between p-3 border rounded-lg"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Globe className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <p className="font-medium capitalize">{kb.source_type}</p>
-                          {kb.source_url && (
-                            <p className="text-xs text-muted-foreground">
-                              {kb.source_url}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <Badge variant={kb.is_active ? "success" : "secondary"}>
-                        {kb.is_active ? "Active" : "Inactive"}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </TabsContent>
 
         {/* Voice Tab */}
@@ -775,6 +621,23 @@ export function AssistantBuilder({
                   onCheckedChange={setSpamFilterEnabled}
                 />
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BookOpen className="h-5 w-5" />
+                Knowledge Base
+              </CardTitle>
+              <CardDescription>
+                Manage the business information your AI uses to answer questions
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link href="/settings/knowledge">
+                <Button variant="outline">Manage Knowledge Sources</Button>
+              </Link>
             </CardContent>
           </Card>
 
