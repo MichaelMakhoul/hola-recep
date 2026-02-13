@@ -125,8 +125,8 @@ export async function handleBookAppointment(
       },
     });
 
-    // Record in our database
-    await (supabase as any)
+    // Record in our database — rollback Cal.com booking if this fails
+    const { error: dbError } = await (supabase as any)
       .from("appointments")
       .insert({
         organization_id: organizationId,
@@ -143,10 +143,21 @@ export async function handleBookAppointment(
           calComBookingId: booking.id,
           eventTypeId,
         },
-      })
-      .catch((err: Error) => {
-        console.error("Failed to record appointment locally:", err);
       });
+
+    if (dbError) {
+      console.error("Failed to record appointment locally, rolling back Cal.com booking:", dbError);
+      try {
+        await calClient.cancelBooking(booking.id, "Internal system error - rollback");
+      } catch (rollbackErr) {
+        console.error("CRITICAL: Failed to rollback Cal.com booking after DB failure:", rollbackErr);
+      }
+      return {
+        success: false,
+        message:
+          "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
+      };
+    }
 
     // Send notification
     const appointmentDate = new Date(datetime);
@@ -275,15 +286,16 @@ export async function handleCancelAppointment(
 
   const supabase = createAdminClient();
 
-  const { data: appointment } = await (supabase as any)
+  const { data: appointments } = await (supabase as any)
     .from("appointments")
     .select("*")
     .eq("organization_id", organizationId)
     .eq("attendee_phone", phone)
     .in("status", ["confirmed", "pending"])
     .order("start_time", { ascending: true })
-    .limit(1)
-    .single();
+    .limit(1);
+
+  const appointment = appointments?.[0] ?? null;
 
   if (!appointment) {
     return {
@@ -304,10 +316,14 @@ export async function handleCancelAppointment(
       }
     }
 
-    await (supabase as any)
+    const { error: cancelDbError } = await (supabase as any)
       .from("appointments")
       .update({ status: "cancelled" })
       .eq("id", appointment.id);
+
+    if (cancelDbError) {
+      console.error("Failed to update appointment status locally:", cancelDbError);
+    }
 
     const startDate = new Date(appointment.start_time);
     const dateStr = startDate.toLocaleDateString("en-US", {

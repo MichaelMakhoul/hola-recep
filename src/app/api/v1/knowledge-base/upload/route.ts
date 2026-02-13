@@ -83,7 +83,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Truncate to max length
+    let truncated = false;
+    let originalLength = extractedText.length;
     if (extractedText.length > MAX_TEXT_LENGTH) {
+      truncated = true;
       extractedText = extractedText.slice(0, MAX_TEXT_LENGTH);
     }
 
@@ -108,18 +111,39 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to save uploaded KB entry:", error);
+      return NextResponse.json(
+        { error: "Failed to save uploaded document" },
+        { status: 500 }
+      );
     }
 
-    await resyncOrgAssistants(supabase, membership.organization_id).catch(
-      (err) => console.error("Failed to resync assistants:", err)
-    );
+    let resyncWarning: string | undefined;
+    try {
+      await resyncOrgAssistants(supabase, membership.organization_id);
+    } catch (err) {
+      console.error("Failed to resync assistants:", err);
+      resyncWarning = "Document saved, but assistants may take a moment to reflect changes.";
+    }
 
-    return NextResponse.json(entry, { status: 201 });
+    return NextResponse.json({
+      ...entry,
+      ...(truncated && {
+        warning: `Document was truncated from ${originalLength} to ${MAX_TEXT_LENGTH} characters. Consider splitting into multiple documents.`,
+      }),
+      ...(resyncWarning && { warning: resyncWarning }),
+    }, { status: 201 });
   } catch (error) {
     console.error("Error uploading file:", error);
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("password") || message.includes("encrypted")) {
+      return NextResponse.json(
+        { error: "This file appears to be password-protected. Please upload an unprotected version." },
+        { status: 400 }
+      );
+    }
     return NextResponse.json(
-      { error: "Failed to process file" },
+      { error: "Failed to process file. Please ensure the file is a valid PDF or DOCX." },
       { status: 500 }
     );
   }

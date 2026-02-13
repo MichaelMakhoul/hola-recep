@@ -8,6 +8,8 @@ export type {
   VerificationMethod,
 } from "./types";
 
+export { promptConfigSchema } from "./types";
+
 export { fieldPresetsByIndustry, universalFields, getFieldsForIndustry } from "./field-presets";
 export { buildPromptFromConfig, generateGreeting, buildAnalysisPlan } from "./generate-prompt";
 export type { AnalysisPlan } from "./generate-prompt";

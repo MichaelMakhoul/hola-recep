@@ -44,7 +44,11 @@ export async function GET() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to list knowledge bases:", error);
+      return NextResponse.json(
+        { error: "Failed to load knowledge base entries" },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json(entries || []);
@@ -101,15 +105,26 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to create knowledge base entry:", error);
+      return NextResponse.json(
+        { error: "Failed to save knowledge base entry" },
+        { status: 500 }
+      );
     }
 
     // Resync all org assistants with updated KB
-    await resyncOrgAssistants(supabase, membership.organization_id).catch(
-      (err) => console.error("Failed to resync assistants:", err)
-    );
+    let resyncWarning: string | undefined;
+    try {
+      await resyncOrgAssistants(supabase, membership.organization_id);
+    } catch (err) {
+      console.error("Failed to resync assistants:", err);
+      resyncWarning = "Knowledge base saved, but assistants may take a moment to reflect changes.";
+    }
 
-    return NextResponse.json(entry, { status: 201 });
+    return NextResponse.json({
+      ...entry,
+      ...(resyncWarning && { warning: resyncWarning }),
+    }, { status: 201 });
   } catch (error) {
     console.error("Error creating knowledge base:", error);
     if (error instanceof z.ZodError) {

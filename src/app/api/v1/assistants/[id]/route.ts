@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
 import { calendarTools } from "@/lib/calendar/cal-com";
-import { buildAnalysisPlan, buildPromptFromConfig } from "@/lib/prompt-builder";
+import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -22,6 +22,7 @@ interface Assistant {
   voice_provider: string;
   voice_id: string;
   prompt_config: Record<string, any> | null;
+  settings: Record<string, any> | null;
 }
 
 const updateAssistantSchema = z.object({
@@ -35,7 +36,7 @@ const updateAssistantSchema = z.object({
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
-  promptConfig: z.any().optional(),
+  promptConfig: promptConfigSchema.optional(),
   settings: z.record(z.any()).optional(),
 });
 
@@ -149,14 +150,16 @@ export async function PATCH(
         let vapiSystemPrompt = rawPrompt;
         if (promptConfig) {
           const config = promptConfig as PromptConfig;
+          const settings = validatedData.settings || currentAssistant.settings || {};
+          const industry = settings.industry || "other";
           vapiSystemPrompt = buildPromptFromConfig(config, {
             businessName: validatedData.name || currentAssistant.name,
-            industry: "other",
+            industry,
             knowledgeBase: aggregatedKB || undefined,
           });
         } else if (aggregatedKB) {
           if (rawPrompt.includes("{knowledge_base}")) {
-            vapiSystemPrompt = rawPrompt.replace("{knowledge_base}", aggregatedKB);
+            vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
           } else {
             vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
           }
@@ -190,11 +193,21 @@ export async function PATCH(
         };
       }
 
-      vapiUpdate.tools = [
-        calendarTools.checkAvailability,
-        calendarTools.bookAppointment,
-        calendarTools.cancelAppointment,
-      ];
+      // Only include calendar tools if the org has a calendar integration
+      const { data: calIntegration } = await (supabase as any)
+        .from("calendar_integrations")
+        .select("id")
+        .eq("organization_id", membership.organization_id)
+        .eq("is_active", true)
+        .limit(1);
+
+      if (calIntegration && calIntegration.length > 0) {
+        vapiUpdate.tools = [
+          calendarTools.checkAvailability,
+          calendarTools.bookAppointment,
+          calendarTools.cancelAppointment,
+        ];
+      }
 
       // Build analysis plan from prompt config if provided
       if (validatedData.promptConfig) {
@@ -205,7 +218,15 @@ export async function PATCH(
       }
 
       if (Object.keys(vapiUpdate).length > 0) {
-        await vapi.updateAssistant(currentAssistant.vapi_assistant_id, vapiUpdate);
+        try {
+          await vapi.updateAssistant(currentAssistant.vapi_assistant_id, vapiUpdate);
+        } catch (vapiError) {
+          console.error("Failed to update Vapi assistant:", vapiError);
+          return NextResponse.json(
+            { error: "Failed to sync changes with voice platform. Please try again." },
+            { status: 502 }
+          );
+        }
       }
     }
 

@@ -18,6 +18,7 @@ interface AssistantRow {
   vapi_assistant_id: string | null;
   system_prompt: string;
   prompt_config: Record<string, any> | null;
+  settings: Record<string, any> | null;
   model_provider: string;
   model: string;
   name: string;
@@ -36,10 +37,16 @@ export async function getAggregatedKnowledgeBase(
     .from("knowledge_bases")
     .select("id, title, source_type, content, is_active")
     .eq("organization_id", organizationId)
+    .is("assistant_id", null)
     .eq("is_active", true)
     .order("created_at", { ascending: true });
 
-  if (error || !entries || entries.length === 0) {
+  if (error) {
+    console.error("Failed to fetch knowledge base entries:", error);
+    throw new Error(`Failed to aggregate knowledge base: ${error.message}`);
+  }
+
+  if (!entries || entries.length === 0) {
     return "";
   }
 
@@ -85,7 +92,7 @@ export async function resyncOrgAssistants(
   const { data: assistants, error } = await (supabase as any)
     .from("assistants")
     .select(
-      "id, vapi_assistant_id, system_prompt, prompt_config, model_provider, model, name, is_active"
+      "id, vapi_assistant_id, system_prompt, prompt_config, settings, model_provider, model, name, is_active"
     )
     .eq("organization_id", organizationId)
     .eq("is_active", true);
@@ -104,16 +111,17 @@ export async function resyncOrgAssistants(
     if (assistant.prompt_config) {
       // Guided prompt builder — rebuild with KB context
       const config = assistant.prompt_config as unknown as PromptConfig;
+      const industry = assistant.settings?.industry || "other";
       systemPrompt = buildPromptFromConfig(config, {
         businessName: assistant.name,
-        industry: "other",
+        industry,
         knowledgeBase: aggregatedKB || undefined,
       });
     } else {
       // Legacy prompt — replace placeholder or append
       if (assistant.system_prompt.includes("{knowledge_base}")) {
         systemPrompt = assistant.system_prompt.replace(
-          "{knowledge_base}",
+          /{knowledge_base}/g,
           aggregatedKB || "No additional business information provided yet."
         );
       } else if (aggregatedKB) {

@@ -163,7 +163,7 @@ export async function POST(request: Request) {
         }
 
         // Create call record
-        await (supabase.from("calls") as any).insert({
+        const { error: insertError } = await (supabase.from("calls") as any).insert({
           organization_id: phoneNumber.organization_id,
           assistant_id: assistantId,
           phone_number_id: phoneNumber.id,
@@ -173,6 +173,18 @@ export async function POST(request: Request) {
           status: mapStatus(call.status),
           started_at: call.startedAt,
         });
+
+        if (insertError) {
+          console.error("Failed to create call record:", {
+            vapiCallId: call.id,
+            organizationId: phoneNumber.organization_id,
+            error: insertError,
+          });
+          return NextResponse.json(
+            { error: "Failed to record call" },
+            { status: 500 }
+          );
+        }
 
         break;
       }
@@ -256,7 +268,7 @@ export async function POST(request: Request) {
           null;
 
         // Update call record with spam analysis and collected data
-        await (supabase
+        const { error: updateError } = await (supabase
           .from("calls") as any)
           .update({
             status: callStatus,
@@ -282,6 +294,13 @@ export async function POST(request: Request) {
             },
           })
           .eq("vapi_call_id", call.id);
+
+        if (updateError) {
+          console.error("Failed to update call record:", {
+            vapiCallId: call.id,
+            error: updateError,
+          });
+        }
 
         // Increment call usage for billing (skip for spam calls)
         // Using call-based pricing: each answered call counts as 1, regardless of duration
@@ -358,30 +377,38 @@ export async function POST(request: Request) {
       case "tool-calls": {
         const toolCallList = event.message.toolCallList;
         const call = event.message.call;
-        if (!toolCallList || !call) break;
+        if (!toolCallList || !call) {
+          return NextResponse.json({ results: [] });
+        }
 
         // Get organizationId from call metadata or DB lookup
         let organizationId =
           (call.metadata?.organizationId as string) || null;
 
         if (!organizationId) {
-          const { data: existingCall } = await (supabase
+          const { data: existingCall, error: callError } = await (supabase
             .from("calls") as any)
             .select("organization_id")
             .eq("vapi_call_id", call.id)
             .single();
 
+          if (callError) {
+            console.error("DB error looking up call for org ID:", callError);
+          }
           organizationId = existingCall?.organization_id || null;
         }
 
         if (!organizationId) {
           // Last resort: look up via phone number
-          const { data: phoneNumber } = await (supabase
+          const { data: phoneNumber, error: phoneError } = await (supabase
             .from("phone_numbers") as any)
             .select("organization_id")
             .eq("vapi_phone_number_id", call.phoneNumberId)
             .single();
 
+          if (phoneError) {
+            console.error("DB error looking up phone number for org ID:", phoneError);
+          }
           organizationId = phoneNumber?.organization_id || null;
         }
 
@@ -398,10 +425,24 @@ export async function POST(request: Request) {
         const results = [];
 
         for (const toolCall of toolCallList) {
-          const args =
-            typeof toolCall.function.arguments === "string"
-              ? JSON.parse(toolCall.function.arguments)
-              : toolCall.function.arguments;
+          let args: Record<string, unknown>;
+          try {
+            args =
+              typeof toolCall.function.arguments === "string"
+                ? JSON.parse(toolCall.function.arguments)
+                : toolCall.function.arguments;
+          } catch (parseError) {
+            console.error("Failed to parse tool call arguments:", {
+              toolCallId: toolCall.id,
+              functionName: toolCall.function.name,
+              error: parseError,
+            });
+            results.push({
+              toolCallId: toolCall.id,
+              result: "I'm sorry, I had trouble understanding that request. Could you try again?",
+            });
+            continue;
+          }
 
           let result: { success: boolean; message: string };
 

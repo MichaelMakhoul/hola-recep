@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type VerificationMethod =
   | "read-back-digits"
   | "spell-out"
@@ -56,3 +58,29 @@ export interface PromptConfig {
   customInstructions: string;
   isManuallyEdited: boolean;
 }
+
+export const promptConfigSchema = z.object({
+  version: z.literal(1),
+  fields: z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      type: z.enum(["text", "phone", "email", "date", "number", "select", "address"]),
+      required: z.boolean(),
+      verification: z.enum(["read-back-digits", "spell-out", "repeat-confirm", "read-back-characters", "none"]),
+      category: z.enum(["universal", "medical", "dental", "legal", "home_services", "real_estate", "salon", "automotive", "veterinary", "restaurant", "other"]),
+      description: z.string().optional(),
+    })
+  ),
+  behaviors: z.object({
+    scheduleAppointments: z.boolean(),
+    handleEmergencies: z.boolean(),
+    providePricingInfo: z.boolean(),
+    takeMessages: z.boolean(),
+    transferToHuman: z.boolean(),
+    afterHoursHandling: z.boolean(),
+  }),
+  tone: z.enum(["professional", "friendly", "casual"]),
+  customInstructions: z.string(),
+  isManuallyEdited: z.boolean(),
+});

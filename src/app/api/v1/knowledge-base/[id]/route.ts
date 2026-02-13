@@ -114,11 +114,18 @@ export async function PATCH(
       );
     }
 
-    await resyncOrgAssistants(supabase, membership.organization_id).catch(
-      (err) => console.error("Failed to resync assistants:", err)
-    );
+    let resyncWarning: string | undefined;
+    try {
+      await resyncOrgAssistants(supabase, membership.organization_id);
+    } catch (err) {
+      console.error("Failed to resync assistants:", err);
+      resyncWarning = "Knowledge base updated, but assistants may take a moment to reflect changes.";
+    }
 
-    return NextResponse.json(entry);
+    return NextResponse.json({
+      ...entry,
+      ...(resyncWarning && { warning: resyncWarning }),
+    });
   } catch (error) {
     console.error("Error updating knowledge base:", error);
     if (error instanceof z.ZodError) {
@@ -170,14 +177,25 @@ export async function DELETE(
       .eq("organization_id", membership.organization_id);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to delete knowledge base entry:", error);
+      return NextResponse.json(
+        { error: "Failed to delete knowledge base entry" },
+        { status: 500 }
+      );
     }
 
-    await resyncOrgAssistants(supabase, membership.organization_id).catch(
-      (err) => console.error("Failed to resync assistants:", err)
-    );
+    let resyncWarning: string | undefined;
+    try {
+      await resyncOrgAssistants(supabase, membership.organization_id);
+    } catch (err) {
+      console.error("Failed to resync assistants:", err);
+      resyncWarning = "Entry deleted, but assistants may take a moment to reflect changes.";
+    }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({
+      success: true,
+      ...(resyncWarning && { warning: resyncWarning }),
+    });
   } catch (error) {
     console.error("Error deleting knowledge base:", error);
     return NextResponse.json(

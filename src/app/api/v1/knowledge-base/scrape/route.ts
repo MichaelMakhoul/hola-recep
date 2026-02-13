@@ -125,15 +125,24 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error("Failed to save knowledge base:", insertError);
+      return NextResponse.json(
+        { error: "Scraped successfully but failed to save. Please try again." },
+        { status: 500 }
+      );
     }
 
     // Resync all org assistants with updated KB
-    await resyncOrgAssistants(supabase, organizationId).catch((err) =>
-      console.error("Failed to resync assistants:", err)
-    );
+    let resyncWarning: string | undefined;
+    try {
+      await resyncOrgAssistants(supabase, organizationId);
+    } catch (err) {
+      console.error("Failed to resync assistants:", err);
+      resyncWarning = "Knowledge base saved, but assistants may take a moment to reflect changes.";
+    }
 
     return NextResponse.json({
       success: true,
+      ...(resyncWarning && { warning: resyncWarning }),
       data: {
         url: scrapedData.baseUrl,
         totalPages: scrapedData.totalPages,

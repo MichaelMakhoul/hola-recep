@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
 import { calendarTools } from "@/lib/calendar/cal-com";
-import { buildAnalysisPlan, buildPromptFromConfig } from "@/lib/prompt-builder";
+import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -21,7 +21,7 @@ const createAssistantSchema = z.object({
   modelProvider: z.string().default("openai"),
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
-  promptConfig: z.any().optional(),
+  promptConfig: promptConfigSchema.optional(),
   settings: z.record(z.any()).optional(),
 });
 
@@ -123,21 +123,32 @@ export async function POST(request: Request) {
     let vapiSystemPrompt = validatedData.systemPrompt;
     if (validatedData.promptConfig) {
       const config = validatedData.promptConfig as PromptConfig;
+      const industry = validatedData.settings?.industry || "other";
       vapiSystemPrompt = buildPromptFromConfig(config, {
         businessName: validatedData.name,
-        industry: "other",
+        industry,
         knowledgeBase: aggregatedKB || undefined,
       });
     } else if (aggregatedKB) {
       if (validatedData.systemPrompt.includes("{knowledge_base}")) {
         vapiSystemPrompt = validatedData.systemPrompt.replace(
-          "{knowledge_base}",
+          /{knowledge_base}/g,
           aggregatedKB
         );
       } else {
         vapiSystemPrompt = `${validatedData.systemPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
       }
     }
+
+    // Only include calendar tools if the org has a calendar integration
+    const { data: calIntegration } = await (supabase as any)
+      .from("calendar_integrations")
+      .select("id")
+      .eq("organization_id", membership.organization_id)
+      .eq("is_active", true)
+      .limit(1);
+
+    const hasCalendar = calIntegration && calIntegration.length > 0;
 
     // Create assistant in Vapi
     const vapi = getVapiClient();
@@ -160,11 +171,13 @@ export async function POST(request: Request) {
       },
       server: serverConfig,
       recordingEnabled: true,
-      tools: [
-        calendarTools.checkAvailability,
-        calendarTools.bookAppointment,
-        calendarTools.cancelAppointment,
-      ],
+      ...(hasCalendar && {
+        tools: [
+          calendarTools.checkAvailability,
+          calendarTools.bookAppointment,
+          calendarTools.cancelAppointment,
+        ],
+      }),
       ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,
