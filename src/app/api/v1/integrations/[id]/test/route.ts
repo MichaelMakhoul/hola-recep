@@ -9,22 +9,24 @@ interface Membership {
   organization_id: string;
 }
 
-const SAMPLE_PAYLOAD = {
-  event: "call.completed",
-  timestamp: new Date().toISOString(),
-  data: {
-    call_id: "00000000-0000-0000-0000-000000000000",
-    caller_phone: "+61400000000",
-    caller_name: "Test Caller",
-    summary: "This is a test webhook delivery from Hola Recep.",
-    transcript: "AI: Hello, how can I help you today?\nCaller: This is a test call.",
-    duration_seconds: 30,
-    assistant_name: "Test Assistant",
-    outcome: "completed",
-    recording_url: null,
-    collected_data: { test: true },
-  },
-};
+function buildSamplePayload() {
+  return {
+    event: "call.completed",
+    timestamp: new Date().toISOString(),
+    data: {
+      call_id: "00000000-0000-0000-0000-000000000000",
+      caller_phone: "+61400000000",
+      caller_name: "Test Caller",
+      summary: "This is a test webhook delivery from Hola Recep.",
+      transcript: "AI: Hello, how can I help you today?\nCaller: This is a test call.",
+      duration_seconds: 30,
+      assistant_name: "Test Assistant",
+      outcome: "completed",
+      recording_url: null,
+      collected_data: { test: true },
+    },
+  };
+}
 
 // POST /api/v1/integrations/[id]/test
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -75,7 +77,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       );
     }
 
-    const payloadStr = JSON.stringify(SAMPLE_PAYLOAD);
+    if (!secret) {
+      return NextResponse.json(
+        { error: "Failed to decrypt signing secret" },
+        { status: 500 }
+      );
+    }
+
+    const samplePayload = buildSamplePayload();
+    const payloadStr = JSON.stringify(samplePayload);
     const signature = signPayload(payloadStr, secret);
 
     const controller = new AbortController();
@@ -95,13 +105,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       });
 
       clearTimeout(timeout);
-      const responseBody = await response.text().catch(() => "");
+      const responseBody = await response.text().catch((err: Error) => `[Failed to read response: ${err.message}]`);
 
       // Log the test delivery
       await (supabase.from("integration_logs") as any).insert({
         integration_id: id,
         event_type: "test",
-        payload: SAMPLE_PAYLOAD,
+        payload: samplePayload,
         response_status: response.status,
         response_body: responseBody.slice(0, 1000),
         success: response.ok,
@@ -127,7 +137,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       await (supabase.from("integration_logs") as any).insert({
         integration_id: id,
         event_type: "test",
-        payload: SAMPLE_PAYLOAD,
+        payload: samplePayload,
         response_body: message,
         success: false,
       });

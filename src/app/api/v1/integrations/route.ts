@@ -55,18 +55,23 @@ export async function GET(request: Request) {
       .order("created_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to list integrations:", error);
+      return NextResponse.json({ error: "Failed to load integrations" }, { status: 500 });
     }
 
     // Mask webhook URLs for display (show domain only), strip encrypted values
     const masked = (integrations || []).map((i: Record<string, unknown>) => {
       const decrypted = safeDecrypt(i.webhook_url as string);
       let displayUrl = "";
-      try {
-        const url = new URL(decrypted);
-        displayUrl = `${url.protocol}//${url.hostname}/***`;
-      } catch {
-        displayUrl = "***";
+      if (!decrypted) {
+        displayUrl = "[decryption error]";
+      } else {
+        try {
+          const url = new URL(decrypted);
+          displayUrl = `${url.protocol}//${url.hostname}/***`;
+        } catch {
+          displayUrl = "[invalid URL]";
+        }
       }
       const { webhook_url, signing_secret, ...safe } = i;
       return { ...safe, webhook_url_display: displayUrl };
@@ -142,7 +147,8 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to create integration:", error);
+      return NextResponse.json({ error: "Failed to create integration" }, { status: 500 });
     }
 
     // Return signing secret only on creation (like API keys)

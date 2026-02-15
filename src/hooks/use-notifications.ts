@@ -68,80 +68,97 @@ export function useNotifications(organizationId: string) {
   const fetchNotifications = useCallback(async () => {
     if (!organizationId) return;
 
-    const supabase = createClient();
-    const twentyFourHoursAgo = new Date(
-      Date.now() - 24 * 60 * 60 * 1000
-    ).toISOString();
+    try {
+      const supabase = createClient();
+      const twentyFourHoursAgo = new Date(
+        Date.now() - 24 * 60 * 60 * 1000
+      ).toISOString();
 
-    const [callsResult, appointmentsResult] = await Promise.all([
-      (supabase as any)
-        .from("calls")
-        .select(
-          "id, status, outcome, is_spam, follow_up_required, caller_name, caller_phone, created_at"
-        )
-        .eq("organization_id", organizationId)
-        .gte("created_at", twentyFourHoursAgo)
-        .or(
-          "status.in.(no-answer,busy),outcome.eq.voicemail,is_spam.eq.true,follow_up_required.eq.true"
-        )
-        .order("created_at", { ascending: false })
-        .limit(20),
-      (supabase as any)
-        .from("appointments")
-        .select("id, attendee_name, created_at")
-        .eq("organization_id", organizationId)
-        .gte("created_at", twentyFourHoursAgo)
-        .order("created_at", { ascending: false })
-        .limit(20),
-    ]);
+      const [callsResult, appointmentsResult] = await Promise.all([
+        (supabase as any)
+          .from("calls")
+          .select(
+            "id, status, outcome, is_spam, follow_up_required, caller_name, caller_phone, created_at"
+          )
+          .eq("organization_id", organizationId)
+          .gte("created_at", twentyFourHoursAgo)
+          .or(
+            "status.in.(no-answer,busy),outcome.eq.voicemail,is_spam.eq.true,follow_up_required.eq.true"
+          )
+          .order("created_at", { ascending: false })
+          .limit(20),
+        (supabase as any)
+          .from("appointments")
+          .select("id, attendee_name, created_at")
+          .eq("organization_id", organizationId)
+          .gte("created_at", twentyFourHoursAgo)
+          .order("created_at", { ascending: false })
+          .limit(20),
+      ]);
 
-    const items: Notification[] = [];
+      if (callsResult.error) {
+        console.error("Failed to fetch call notifications:", callsResult.error);
+      }
+      if (appointmentsResult.error) {
+        console.error("Failed to fetch appointment notifications:", appointmentsResult.error);
+      }
 
-    if (callsResult.data) {
-      for (const call of callsResult.data) {
-        const classified = classifyCall(call);
-        if (classified) {
+      const items: Notification[] = [];
+
+      if (callsResult.data) {
+        for (const call of callsResult.data) {
+          const classified = classifyCall(call);
+          if (classified) {
+            items.push({
+              id: call.id,
+              type: classified.type,
+              description: classified.description,
+              createdAt: call.created_at,
+            });
+          }
+        }
+      }
+
+      if (appointmentsResult.data) {
+        for (const apt of appointmentsResult.data) {
           items.push({
-            id: call.id,
-            type: classified.type,
-            description: classified.description,
-            createdAt: call.created_at,
+            id: apt.id,
+            type: "appointment",
+            description: `${apt.attendee_name} booked an appointment`,
+            createdAt: apt.created_at,
           });
         }
       }
+
+      items.sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      setNotifications(items.slice(0, 20));
+    } catch (err) {
+      console.error("Notification fetch failed:", err);
+    } finally {
+      setIsLoading(false);
     }
-
-    if (appointmentsResult.data) {
-      for (const apt of appointmentsResult.data) {
-        items.push({
-          id: apt.id,
-          type: "appointment",
-          description: `${apt.attendee_name} booked an appointment`,
-          createdAt: apt.created_at,
-        });
-      }
-    }
-
-    items.sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-
-    setNotifications(items.slice(0, 20));
-    setIsLoading(false);
   }, [organizationId]);
 
   // Initialize lastSeen from localStorage
   useEffect(() => {
     if (!organizationId) return;
-    const key = getLastSeenKey(organizationId);
-    const stored = localStorage.getItem(key);
-    if (stored) {
-      setLastSeen(stored);
-    } else {
-      const now = new Date().toISOString();
-      localStorage.setItem(key, now);
-      setLastSeen(now);
+    try {
+      const key = getLastSeenKey(organizationId);
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        setLastSeen(stored);
+      } else {
+        const now = new Date().toISOString();
+        localStorage.setItem(key, now);
+        setLastSeen(now);
+      }
+    } catch {
+      // Fallback for private browsing or restricted environments
+      setLastSeen(null);
     }
   }, [organizationId]);
 
@@ -160,7 +177,11 @@ export function useNotifications(organizationId: string) {
   const markAllRead = useCallback(() => {
     if (!organizationId) return;
     const now = new Date().toISOString();
-    localStorage.setItem(getLastSeenKey(organizationId), now);
+    try {
+      localStorage.setItem(getLastSeenKey(organizationId), now);
+    } catch {
+      // Ignore localStorage errors
+    }
     setLastSeen(now);
   }, [organizationId]);
 

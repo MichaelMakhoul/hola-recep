@@ -70,7 +70,7 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
 
       <div className="flex items-center gap-4">
         {/* Notifications */}
-        <NotificationBell organizationId={organization?.id || ""} />
+        {organization && <NotificationBell organizationId={organization.id} />}
 
         {/* User menu */}
         <DropdownMenu>

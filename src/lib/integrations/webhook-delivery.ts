@@ -89,6 +89,12 @@ export async function deliverWebhooks(
         return;
       }
 
+      if (!secret) {
+        console.error("[Webhooks] Failed to decrypt signing secret for integration:", integration.id);
+        await logDelivery(supabase, integration.id, event, payload, null, "Signing secret decryption failed", false);
+        return;
+      }
+
       const signature = signPayload(payloadStr, secret);
 
       try {
@@ -109,7 +115,7 @@ export async function deliverWebhooks(
 
         clearTimeout(timeout);
 
-        const responseBody = await response.text().catch(() => "");
+        const responseBody = await response.text().catch((err: Error) => `[Failed to read response: ${err.message}]`);
         const success = response.ok;
 
         await logDelivery(

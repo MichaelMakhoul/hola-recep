@@ -52,11 +52,15 @@ export function IntegrationList() {
   const loadIntegrations = useCallback(async () => {
     try {
       const response = await fetch("/api/v1/integrations");
-      if (!response.ok) throw new Error("Failed to load");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to load");
+      }
       const data = await response.json();
       setIntegrations(data);
-    } catch {
-      toast({ variant: "destructive", title: "Error", description: "Failed to load integrations" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load integrations";
+      toast({ variant: "destructive", title: "Error", description: message });
     } finally {
       setIsLoading(false);
     }
@@ -73,23 +77,31 @@ export function IntegrationList() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_active: isActive }),
       });
-      if (!response.ok) throw new Error("Failed to update");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to update");
+      }
       setIntegrations((prev) =>
         prev.map((i) => (i.id === id ? { ...i, is_active: isActive } : i))
       );
-    } catch {
-      toast({ variant: "destructive", title: "Error", description: "Failed to update integration" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to update integration";
+      toast({ variant: "destructive", title: "Error", description: message });
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       const response = await fetch(`/api/v1/integrations/${id}`, { method: "DELETE" });
-      if (!response.ok) throw new Error("Failed to delete");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to delete");
+      }
       setIntegrations((prev) => prev.filter((i) => i.id !== id));
       toast({ title: "Deleted", description: "Integration removed" });
-    } catch {
-      toast({ variant: "destructive", title: "Error", description: "Failed to delete integration" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to delete integration";
+      toast({ variant: "destructive", title: "Error", description: message });
     }
   };
 
@@ -103,8 +115,9 @@ export function IntegrationList() {
         title: result.success ? "Test Successful" : "Test Failed",
         description: result.message,
       });
-    } catch {
-      toast({ variant: "destructive", title: "Error", description: "Failed to send test webhook" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to send test webhook";
+      toast({ variant: "destructive", title: "Error", description: message });
     } finally {
       setTestingId(null);
     }
@@ -122,8 +135,9 @@ export function IntegrationList() {
         if (!response.ok) throw new Error("Failed to load logs");
         const data = await response.json();
         setLogs((prev) => ({ ...prev, [id]: data.logs }));
-      } catch {
-        toast({ variant: "destructive", title: "Error", description: "Failed to load logs" });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to load logs";
+        toast({ variant: "destructive", title: "Error", description: message });
       }
     }
   };

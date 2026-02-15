@@ -31,8 +31,10 @@ export async function GET(request: Request) {
     }
 
     const url = new URL(request.url);
-    const limit = Math.min(parseInt(url.searchParams.get("limit") || "50"), 100);
-    const offset = parseInt(url.searchParams.get("offset") || "0");
+    const rawLimit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const rawOffset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const limit = Math.min(Number.isNaN(rawLimit) ? 50 : Math.max(1, rawLimit), 100);
+    const offset = Number.isNaN(rawOffset) ? 0 : Math.max(0, rawOffset);
 
     // Get all integration IDs for this org
     const { data: integrations } = await (supabase.from("integrations") as any)
@@ -57,7 +59,8 @@ export async function GET(request: Request) {
       .range(offset, offset + limit - 1);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to fetch integration logs:", error);
+      return NextResponse.json({ error: "Failed to load logs" }, { status: 500 });
     }
 
     // Attach integration name

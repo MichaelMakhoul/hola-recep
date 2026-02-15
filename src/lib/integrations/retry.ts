@@ -47,6 +47,10 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
     return { success: false, error: "URL blocked by security policy" };
   }
 
+  if (!secret) {
+    return { success: false, error: "Signing secret decryption failed" };
+  }
+
   const payloadStr = JSON.stringify(log.payload);
   const signature = signPayload(payloadStr, secret);
 
@@ -68,10 +72,10 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
 
     clearTimeout(timeout);
 
-    const responseBody = await response.text().catch(() => "");
+    const responseBody = await response.text().catch((err: Error) => `[Failed to read response: ${err.message}]`);
 
     // Update the log entry
-    await (supabase as any)
+    const { error: updateError } = await (supabase as any)
       .from("integration_logs")
       .update({
         response_status: response.status,
@@ -82,6 +86,10 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
       })
       .eq("id", logId);
 
+    if (updateError) {
+      console.error("[Webhooks] Failed to update retry log:", updateError);
+    }
+
     return {
       success: response.ok,
       status: response.status,
@@ -90,7 +98,7 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
 
-    await (supabase as any)
+    const { error: updateError } = await (supabase as any)
       .from("integration_logs")
       .update({
         response_body: message,
@@ -99,6 +107,10 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
         attempted_at: new Date().toISOString(),
       })
       .eq("id", logId);
+
+    if (updateError) {
+      console.error("[Webhooks] Failed to update retry log:", updateError);
+    }
 
     return { success: false, error: message };
   }

@@ -49,8 +49,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     // Parse pagination from query params
     const url = new URL(request.url);
-    const limit = Math.min(parseInt(url.searchParams.get("limit") || "20"), 100);
-    const offset = parseInt(url.searchParams.get("offset") || "0");
+    const rawLimit = parseInt(url.searchParams.get("limit") || "20", 10);
+    const rawOffset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const limit = Math.min(Number.isNaN(rawLimit) ? 20 : Math.max(1, rawLimit), 100);
+    const offset = Number.isNaN(rawOffset) ? 0 : Math.max(0, rawOffset);
 
     const { data: logs, error, count } = await (supabase.from("integration_logs") as any)
       .select("id, event_type, response_status, success, attempted_at, retry_count", {
@@ -61,7 +63,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       .range(offset, offset + limit - 1);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("Failed to fetch integration logs:", error);
+      return NextResponse.json({ error: "Failed to load logs" }, { status: 500 });
     }
 
     return NextResponse.json({

@@ -502,14 +502,29 @@ export async function POST(request: Request) {
           // Look up assistant name for the payload
           let assistantName: string | null = null;
           if (existingCall.organization_id) {
-            const { data: assistantRecord } = await (supabase.from("assistants") as any)
+            const { data: assistantRecord, error: assistantLookupError } = await (supabase.from("assistants") as any)
               .select("name")
               .eq("vapi_assistant_id", call.assistantId)
               .single();
+            if (assistantLookupError && assistantLookupError.code !== "PGRST116") {
+              console.error("Failed to look up assistant name for webhook:", assistantLookupError);
+            }
             if (assistantRecord) assistantName = assistantRecord.name;
           }
 
-          deliverWebhooks(existingCall.organization_id, "call.completed", {
+          // Determine correct webhook event based on call outcome
+          const isVoicemail = recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10;
+          const isMissed = callStatus === "no-answer" || callStatus === "busy";
+
+          type WebhookEvent = "call.completed" | "call.missed" | "voicemail.received";
+          let webhookEvent: WebhookEvent = "call.completed";
+          if (isVoicemail) {
+            webhookEvent = "voicemail.received";
+          } else if (isMissed) {
+            webhookEvent = "call.missed";
+          }
+
+          deliverWebhooks(existingCall.organization_id, webhookEvent, {
             callId: existingCall.id,
             caller: call.customer?.number || "Unknown",
             callerName: callerName ?? undefined,
@@ -520,7 +535,7 @@ export async function POST(request: Request) {
             outcome: callStatus,
             recordingUrl: recordingUrl ?? undefined,
             collectedData: collectedData as Record<string, unknown> | undefined,
-          }).catch((err) => console.error("Failed to deliver webhooks:", err));
+          }).catch((err) => console.error("[Webhooks] Failed to deliver webhooks:", err));
         }
 
         break;
