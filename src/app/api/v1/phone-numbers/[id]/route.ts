@@ -12,6 +12,8 @@ interface Membership {
 const updatePhoneNumberSchema = z.object({
   assistantId: z.string().uuid().nullable().optional(),
   friendlyName: z.string().optional(),
+  forwardingStatus: z.enum(["pending_setup", "active", "paused"]).optional(),
+  carrier: z.string().optional(),
 });
 
 // GET /api/v1/phone-numbers/[id] - Get a single phone number
@@ -133,6 +135,12 @@ export async function PATCH(
     if (validatedData.friendlyName !== undefined) {
       updateData.friendly_name = validatedData.friendlyName;
     }
+    if (validatedData.forwardingStatus !== undefined) {
+      updateData.forwarding_status = validatedData.forwardingStatus;
+    }
+    if (validatedData.carrier !== undefined) {
+      updateData.carrier = validatedData.carrier;
+    }
 
     const { data: phoneNumber, error } = await (supabase
       .from("phone_numbers") as any)
@@ -196,7 +204,7 @@ export async function DELETE(
     // Get phone number
     const { data: phoneNumber } = await (supabase
       .from("phone_numbers") as any)
-      .select("vapi_phone_number_id")
+      .select("vapi_phone_number_id, twilio_sid")
       .eq("id", id)
       .eq("organization_id", membership.organization_id)
       .single();
@@ -212,6 +220,16 @@ export async function DELETE(
         await vapi.deletePhoneNumber(phoneNumber.vapi_phone_number_id);
       } catch (e) {
         console.error("Failed to delete from Vapi:", e);
+      }
+    }
+
+    // Release from Twilio if this was a Twilio-backed number
+    if (phoneNumber.twilio_sid) {
+      try {
+        const { releaseNumber } = await import("@/lib/twilio/client");
+        await releaseNumber(phoneNumber.twilio_sid);
+      } catch (e) {
+        console.error("Failed to release from Twilio:", e);
       }
     }
 

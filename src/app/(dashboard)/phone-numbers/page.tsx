@@ -1,9 +1,8 @@
-import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Phone, MoreVertical, Bot } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Phone, MoreVertical, Bot, PhoneForwarded, AlertCircle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,13 +10,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { formatPhoneNumber } from "@/lib/utils";
-import { BuyPhoneNumberDialog } from "@/components/phone-numbers/buy-dialog";
+import { PhoneNumberActions } from "@/components/phone-numbers/phone-number-actions";
 
 interface PhoneNumber {
   id: string;
   phone_number: string;
   friendly_name: string | null;
   is_active: boolean;
+  source_type: "purchased" | "forwarded";
+  user_phone_number: string | null;
+  forwarding_status: "pending_setup" | "active" | "paused" | null;
+  carrier: string | null;
   assistants: { id: string; name: string } | null;
 }
 
@@ -37,6 +40,17 @@ export default async function PhoneNumbersPage() {
     .single() as { data: { organization_id: string } | null };
 
   const orgId = membership?.organization_id || "";
+
+  // Get org's country
+  let countryCode = "US";
+  if (orgId) {
+    const { data: org } = await (supabase as any)
+      .from("organizations")
+      .select("country")
+      .eq("id", orgId)
+      .single();
+    countryCode = org?.country || "US";
+  }
 
   // Get phone numbers
   const { data: phoneNumbers } = orgId ? await supabase
@@ -62,10 +76,10 @@ export default async function PhoneNumbersPage() {
         <div>
           <h1 className="text-2xl font-bold">Phone Numbers</h1>
           <p className="text-muted-foreground">
-            Purchase and manage phone numbers for your assistants
+            Manage phone numbers for your assistants
           </p>
         </div>
-        <BuyPhoneNumberDialog assistants={assistants || []} />
+        <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} />
       </div>
 
       {/* Phone Numbers List */}
@@ -77,11 +91,15 @@ export default async function PhoneNumbersPage() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                      <Phone className="h-5 w-5 text-primary" />
+                      {phoneNumber.source_type === "forwarded" ? (
+                        <PhoneForwarded className="h-5 w-5 text-primary" />
+                      ) : (
+                        <Phone className="h-5 w-5 text-primary" />
+                      )}
                     </div>
                     <div>
                       <CardTitle className="text-lg">
-                        {formatPhoneNumber(phoneNumber.phone_number)}
+                        {formatPhoneNumber(phoneNumber.phone_number, countryCode)}
                       </CardTitle>
                       <CardDescription className="text-xs">
                         {phoneNumber.friendly_name || "Phone Number"}
@@ -96,21 +114,52 @@ export default async function PhoneNumbersPage() {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem>Assign Assistant</DropdownMenuItem>
+                      {phoneNumber.source_type === "forwarded" && (
+                        <DropdownMenuItem>
+                          View Forwarding Instructions
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem className="text-destructive">
-                        Release Number
+                        {phoneNumber.source_type === "forwarded"
+                          ? "Remove Forwarding"
+                          : "Release Number"}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={phoneNumber.is_active ? "success" : "secondary"}>
-                      {phoneNumber.is_active ? "Active" : "Inactive"}
-                    </Badge>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={phoneNumber.is_active ? "success" : "secondary"}>
+                    {phoneNumber.is_active ? "Active" : "Inactive"}
+                  </Badge>
+                  {phoneNumber.source_type === "forwarded" && (
+                    <Badge variant="outline">Forwarded</Badge>
+                  )}
                 </div>
+
+                {/* Forwarding info */}
+                {phoneNumber.source_type === "forwarded" && phoneNumber.user_phone_number && (
+                  <div className="flex items-center gap-2 rounded-lg bg-muted/50 p-2.5">
+                    <PhoneForwarded className="h-3.5 w-3.5 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground">
+                      Forwards from{" "}
+                      <span className="font-medium text-foreground">
+                        {formatPhoneNumber(phoneNumber.user_phone_number, countryCode)}
+                      </span>
+                    </p>
+                  </div>
+                )}
+
+                {/* Pending setup banner */}
+                {phoneNumber.forwarding_status === "pending_setup" && (
+                  <div className="flex items-center gap-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-2.5">
+                    <AlertCircle className="h-3.5 w-3.5 text-yellow-600" />
+                    <p className="text-xs text-yellow-600">
+                      Forwarding not yet confirmed
+                    </p>
+                  </div>
+                )}
 
                 {phoneNumber.assistants ? (
                   <div className="flex items-center gap-2 rounded-lg bg-muted p-3">
@@ -145,10 +194,10 @@ export default async function PhoneNumbersPage() {
           </div>
           <h3 className="mt-4 text-lg font-semibold">No phone numbers yet</h3>
           <p className="mt-2 text-sm text-muted-foreground">
-            Purchase a phone number to start receiving calls
+            Use your existing business number with call forwarding, or buy a new number
           </p>
           <div className="mt-6">
-            <BuyPhoneNumberDialog assistants={assistants || []} />
+            <PhoneNumberActions assistants={assistants || []} countryCode={countryCode} />
           </div>
         </Card>
       )}

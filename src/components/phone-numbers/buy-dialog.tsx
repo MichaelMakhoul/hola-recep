@@ -24,6 +24,7 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { Plus, Phone, Loader2 } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
+import { getCountryConfig } from "@/lib/country-config";
 
 interface Assistant {
   id: string;
@@ -32,6 +33,9 @@ interface Assistant {
 
 interface BuyPhoneNumberDialogProps {
   assistants: Assistant[];
+  countryCode?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 interface AvailableNumber {
@@ -40,17 +44,18 @@ interface AvailableNumber {
   region?: string;
 }
 
-// Known available area codes from Vapi (updated periodically)
-const SUGGESTED_AREA_CODES = [
-  { code: "651", location: "St. Paul, MN" },
-  { code: "539", location: "Tulsa, OK" },
-  { code: "704", location: "Charlotte, NC" },
-  { code: "469", location: "Dallas, TX" },
-  { code: "725", location: "Las Vegas, NV" },
-];
-
-export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) {
-  const [open, setOpen] = useState(false);
+export function BuyPhoneNumberDialog({ assistants, countryCode = "US", open: controlledOpen, onOpenChange: controlledOnOpenChange }: BuyPhoneNumberDialogProps) {
+  const config = getCountryConfig(countryCode);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : internalOpen;
+  const setOpen = (value: boolean) => {
+    if (isControlled) {
+      controlledOnOpenChange?.(value);
+    } else {
+      setInternalOpen(value);
+    }
+  };
   const [step, setStep] = useState<"search" | "select" | "confirm">("search");
   const [areaCode, setAreaCode] = useState("");
   const [assistantId, setAssistantId] = useState<string>("");
@@ -71,7 +76,6 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           areaCode: areaCode || undefined,
-          country: "US",
           limit: 10,
         }),
       });
@@ -131,7 +135,7 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
 
       toast({
         title: "Phone number purchased!",
-        description: `${formatPhoneNumber(selectedNumber.number)} is now active.`,
+        description: `${formatPhoneNumber(selectedNumber.number, countryCode)} is now active.`,
       });
 
       setOpen(false);
@@ -163,12 +167,14 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
       setOpen(isOpen);
       if (!isOpen) resetForm();
     }}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="mr-2 h-4 w-4" />
-          Buy Number
-        </Button>
-      </DialogTrigger>
+      {!isControlled && (
+        <DialogTrigger asChild>
+          <Button>
+            <Plus className="mr-2 h-4 w-4" />
+            Buy Number
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>
@@ -195,32 +201,34 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
               <Label htmlFor="areaCode">Area Code</Label>
               <Input
                 id="areaCode"
-                placeholder="e.g., 651"
+                placeholder={config.suggestedAreaCodes[0]?.code || ""}
                 value={areaCode}
                 onChange={(e) => setAreaCode(e.target.value)}
-                maxLength={3}
+                maxLength={config.phone.areaCodeLength}
               />
             </div>
 
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Suggested area codes:</Label>
-              <div className="flex flex-wrap gap-2">
-                {SUGGESTED_AREA_CODES.map((ac) => (
-                  <button
-                    key={ac.code}
-                    type="button"
-                    onClick={() => setAreaCode(ac.code)}
-                    className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                      areaCode === ac.code
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted hover:bg-muted/80"
-                    }`}
-                  >
-                    {ac.code} ({ac.location})
-                  </button>
-                ))}
+            {config.suggestedAreaCodes.length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">Suggested area codes:</Label>
+                <div className="flex flex-wrap gap-2">
+                  {config.suggestedAreaCodes.map((ac) => (
+                    <button
+                      key={ac.code}
+                      type="button"
+                      onClick={() => setAreaCode(ac.code)}
+                      className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                        areaCode === ac.code
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted hover:bg-muted/80"
+                      }`}
+                    >
+                      {ac.code} ({ac.location})
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -236,7 +244,7 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
                   <div className="flex items-center gap-3">
                     <Phone className="h-4 w-4 text-muted-foreground" />
                     <div>
-                      <p className="font-medium">{formatPhoneNumber(num.number)}</p>
+                      <p className="font-medium">{formatPhoneNumber(num.number, countryCode)}</p>
                       {(num.locality || num.region) && (
                         <p className="text-xs text-muted-foreground">
                           {[num.locality, num.region].filter(Boolean).join(", ")}
@@ -259,7 +267,7 @@ export function BuyPhoneNumberDialog({ assistants }: BuyPhoneNumberDialogProps) 
             <div className="rounded-lg bg-muted p-4 text-center">
               <Phone className="mx-auto h-8 w-8 text-primary" />
               <p className="mt-2 text-xl font-bold">
-                {formatPhoneNumber(selectedNumber.number)}
+                {formatPhoneNumber(selectedNumber.number, countryCode)}
               </p>
               {(selectedNumber.locality || selectedNumber.region) && (
                 <p className="text-sm text-muted-foreground">

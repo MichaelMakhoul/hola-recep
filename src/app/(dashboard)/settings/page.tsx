@@ -34,6 +34,7 @@ interface Organization {
   phone: string | null;
   address: string | null;
   timezone: string | null;
+  country: string | null;
   business_hours: Record<string, { open: string; close: string } | null> | null;
   notification_email: string | null;
   notification_phone: string | null;
@@ -69,7 +70,7 @@ export default async function SettingsPage() {
       organizations (
         id, name, slug, type, logo_url, primary_color,
         business_name, industry, website_url, phone, address,
-        timezone, business_hours, notification_email, notification_phone,
+        timezone, country, business_hours, notification_email, notification_phone,
         notification_preferences
       )
     `
@@ -168,6 +169,7 @@ export default async function SettingsPage() {
           <BusinessSettingsForm
             organizationId={organization.id}
             initialData={{
+              country: organization.country || "US",
               businessName: organization.business_name || organization.name,
               industry: organization.industry || "",
               websiteUrl: organization.website_url || "",

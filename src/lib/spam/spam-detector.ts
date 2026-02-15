@@ -101,7 +101,7 @@ const SPAM_INDICATORS = {
 /**
  * Analyze a phone number for spam indicators
  */
-function analyzePhoneNumber(phone: string): {
+function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   score: number;
   reasons: string[];
 } {
@@ -111,17 +111,21 @@ function analyzePhoneNumber(phone: string): {
   // Normalize phone number
   const normalized = phone.replace(/\D/g, "");
 
-  // Check if it's a valid US number
-  if (normalized.length !== 10 && normalized.length !== 11) {
+  // Country-aware validation
+  const { getCountryConfig } = require("@/lib/country-config");
+  const config = getCountryConfig(countryCode);
+
+  if (!config.phone.validateNational(normalized)) {
     score += 10;
     reasons.push("Invalid phone number format");
   }
 
-  // Extract area code
-  const areaCode = normalized.length === 11 ? normalized.slice(1, 4) : normalized.slice(0, 3);
+  // Extract area code using country config
+  const areaCode = config.phone.extractAreaCode(normalized);
 
-  // Check against suspicious area codes
-  if (SPAM_INDICATORS.suspiciousAreaCodes.includes(areaCode)) {
+  // Check against suspicious area codes for this country
+  const suspiciousAreaCodes = config.suspiciousAreaCodes;
+  if (areaCode && suspiciousAreaCodes.includes(areaCode)) {
     score += 15;
     reasons.push(`Area code ${areaCode} associated with high spam volume`);
   }

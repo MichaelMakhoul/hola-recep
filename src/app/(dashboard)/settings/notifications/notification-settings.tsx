@@ -194,7 +194,7 @@ export function NotificationSettings({
             <Input
               id="smsPhone"
               type="tel"
-              placeholder="+1 (555) 123-4567"
+              placeholder="(555) 123-4567"
               value={preferences.sms_phone_number || ""}
               onChange={(e) => handleInputChange("sms_phone_number", e.target.value)}
             />

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient } from "@/lib/vapi";
+import { getCountryConfig, formatPhoneForCountry } from "@/lib/country-config";
 import { z } from "zod";
 
 // Type for org_members query result
@@ -10,11 +11,17 @@ interface Membership {
 }
 
 const buyPhoneNumberSchema = z.object({
+  sourceType: z.enum(["purchased", "forwarded"]).default("purchased"),
   areaCode: z.string().optional(),
   country: z.string().default("US"),
   assistantId: z.string().uuid().optional(),
   friendlyName: z.string().optional(),
-});
+  userPhoneNumber: z.string().optional(),
+  carrier: z.string().optional(),
+}).refine(
+  (data) => data.sourceType !== "forwarded" || data.userPhoneNumber,
+  { message: "userPhoneNumber is required for forwarded numbers", path: ["userPhoneNumber"] }
+);
 
 // GET /api/v1/phone-numbers - List all phone numbers
 export async function GET() {
@@ -83,8 +90,36 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
+    // Look up org's country
+    const { data: org } = await (supabase as any)
+      .from("organizations")
+      .select("country")
+      .eq("id", membership.organization_id)
+      .single();
+
+    const countryCode = org?.country || "US";
+    const config = getCountryConfig(countryCode);
+
     const body = await request.json();
     const validatedData = buyPhoneNumberSchema.parse(body);
+
+    // For forwarded numbers, check for duplicate user phone in same org
+    if (validatedData.sourceType === "forwarded" && validatedData.userPhoneNumber) {
+      const cleanedUserPhone = validatedData.userPhoneNumber.replace(/\D/g, "");
+      const { data: existing } = await (supabase
+        .from("phone_numbers") as any)
+        .select("id")
+        .eq("organization_id", membership.organization_id)
+        .eq("user_phone_number", cleanedUserPhone)
+        .maybeSingle();
+
+      if (existing) {
+        return NextResponse.json(
+          { error: "This phone number already has forwarding set up in your organization" },
+          { status: 409 }
+        );
+      }
+    }
 
     // Get assistant's Vapi ID if provided
     let vapiAssistantId: string | undefined;
@@ -101,26 +136,99 @@ export async function POST(request: Request) {
       }
     }
 
-    // Buy phone number from Vapi (uses Vapi's free SIP numbers)
+    // Determine area code
+    let areaCode = validatedData.areaCode;
+    if (!areaCode && validatedData.sourceType === "forwarded" && validatedData.userPhoneNumber) {
+      const digits = validatedData.userPhoneNumber.replace(/\D/g, "");
+      areaCode = config.phone.extractAreaCode(digits) || undefined;
+    }
+
     const vapi = getVapiClient();
-    const vapiPhoneNumber = await vapi.buyPhoneNumber({
-      provider: "vapi",
-      numberDesiredAreaCode: validatedData.areaCode,
-      assistantId: vapiAssistantId,
-      name: validatedData.friendlyName,
-    });
+    let vapiPhoneNumberId: string;
+    let phoneNumber: string;
+    let twilioSid: string | null = null;
+
+    if (config.phoneProvider === "twilio") {
+      // ── Twilio flow: buy from Twilio, then import into Vapi ──
+      const { searchAvailableNumbers, purchaseNumber, releaseNumber, getTwilioAccountSid, getTwilioAuthToken } =
+        await import("@/lib/twilio/client");
+
+      // 1. Search Twilio for a number matching area code
+      const available = await searchAvailableNumbers(config.twilioCountryCode, areaCode, 1);
+      if (available.length === 0) {
+        return NextResponse.json(
+          { error: `No phone numbers available for area code ${areaCode || "any"} in ${config.name}` },
+          { status: 404 }
+        );
+      }
+
+      // 2. Purchase from Twilio
+      const purchased = await purchaseNumber(available[0].number);
+      twilioSid = purchased.sid;
+      phoneNumber = purchased.number;
+
+      // 3. Import into Vapi
+      try {
+        const vapiResult = await vapi.importTwilioNumber({
+          number: phoneNumber,
+          twilioAccountSid: getTwilioAccountSid(),
+          twilioAuthToken: getTwilioAuthToken(),
+          assistantId: vapiAssistantId,
+          name: validatedData.friendlyName,
+        });
+        vapiPhoneNumberId = vapiResult.id;
+      } catch (vapiError) {
+        // Rollback: release from Twilio
+        try {
+          await releaseNumber(twilioSid);
+        } catch (e) {
+          console.error("Failed to rollback Twilio number:", e);
+        }
+        throw vapiError;
+      }
+    } else {
+      // ── Vapi flow: buy directly from Vapi (free SIP numbers) ──
+      const vapiPhoneNumber = await vapi.buyPhoneNumber({
+        provider: "vapi",
+        numberDesiredAreaCode: areaCode,
+        assistantId: vapiAssistantId,
+        name: validatedData.friendlyName,
+      });
+      vapiPhoneNumberId = vapiPhoneNumber.id;
+      phoneNumber = vapiPhoneNumber.number;
+    }
+
+    // Build insert data
+    const cleanedUserPhone = validatedData.userPhoneNumber
+      ? validatedData.userPhoneNumber.replace(/\D/g, "")
+      : null;
+
+    const friendlyName = validatedData.friendlyName
+      || (validatedData.sourceType === "forwarded" && cleanedUserPhone
+        ? `Forwarding for ${formatPhoneForCountry(cleanedUserPhone, countryCode)}`
+        : undefined);
+
+    const insertData: Record<string, unknown> = {
+      organization_id: membership.organization_id,
+      assistant_id: validatedData.assistantId,
+      phone_number: phoneNumber,
+      vapi_phone_number_id: vapiPhoneNumberId,
+      twilio_sid: twilioSid,
+      friendly_name: friendlyName,
+      is_active: true,
+      source_type: validatedData.sourceType,
+    };
+
+    if (validatedData.sourceType === "forwarded") {
+      insertData.user_phone_number = cleanedUserPhone;
+      insertData.forwarding_status = "pending_setup";
+      insertData.carrier = validatedData.carrier || null;
+    }
 
     // Save to database
-    const { data: phoneNumber, error } = await (supabase
+    const { data: phoneNumberRecord, error } = await (supabase
       .from("phone_numbers") as any)
-      .insert({
-        organization_id: membership.organization_id,
-        assistant_id: validatedData.assistantId,
-        phone_number: vapiPhoneNumber.number,
-        vapi_phone_number_id: vapiPhoneNumber.id,
-        friendly_name: validatedData.friendlyName,
-        is_active: true,
-      })
+      .insert(insertData)
       .select(`
         *,
         assistants (id, name)
@@ -128,16 +236,24 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      // Rollback: delete from Vapi
+      // Rollback: delete from Vapi + release from Twilio
       try {
-        await vapi.deletePhoneNumber(vapiPhoneNumber.id);
+        await vapi.deletePhoneNumber(vapiPhoneNumberId);
       } catch (e) {
         console.error("Failed to rollback Vapi phone number:", e);
+      }
+      if (twilioSid) {
+        try {
+          const { releaseNumber } = await import("@/lib/twilio/client");
+          await releaseNumber(twilioSid);
+        } catch (e) {
+          console.error("Failed to rollback Twilio number:", e);
+        }
       }
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json(phoneNumber, { status: 201 });
+    return NextResponse.json(phoneNumberRecord, { status: 201 });
   } catch (error: any) {
     console.error("Error buying phone number:", error);
     if (error instanceof z.ZodError) {
@@ -146,7 +262,6 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-    // Pass through Vapi error messages (they contain helpful hints)
     if (error?.message) {
       return NextResponse.json(
         { error: error.message },
