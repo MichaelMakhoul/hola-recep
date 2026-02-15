@@ -81,7 +81,8 @@ export function BuyPhoneNumberDialog({ assistants, countryCode = "US", open: con
       });
 
       if (!response.ok) {
-        throw new Error("Failed to search phone numbers");
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to search phone numbers");
       }
 
       const numbers = await response.json();
@@ -91,7 +92,7 @@ export function BuyPhoneNumberDialog({ assistants, countryCode = "US", open: con
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to search for phone numbers",
+        description: error instanceof Error ? error.message : "Failed to search for phone numbers",
       });
     } finally {
       setIsSearching(false);

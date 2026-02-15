@@ -24,15 +24,16 @@ export async function POST(request: Request) {
       .eq("user_id", user.id)
       .single() as { data: Membership | null };
 
-    let countryCode = "US";
-    if (membership) {
-      const { data: org } = await (supabase as any)
-        .from("organizations")
-        .select("country")
-        .eq("id", membership.organization_id)
-        .single();
-      countryCode = org?.country || "US";
+    if (!membership) {
+      return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
+
+    const { data: org } = await (supabase as any)
+      .from("organizations")
+      .select("country")
+      .eq("id", membership.organization_id)
+      .single();
+    const countryCode = org?.country || "US";
 
     const config = getCountryConfig(countryCode);
     const body = await request.json();

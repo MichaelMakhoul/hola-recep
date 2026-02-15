@@ -13,7 +13,6 @@ interface Membership {
 const buyPhoneNumberSchema = z.object({
   sourceType: z.enum(["purchased", "forwarded"]).default("purchased"),
   areaCode: z.string().optional(),
-  country: z.string().default("US"),
   assistantId: z.string().uuid().optional(),
   friendlyName: z.string().optional(),
   userPhoneNumber: z.string().optional(),
@@ -66,7 +65,7 @@ export async function GET() {
   }
 }
 
-// POST /api/v1/phone-numbers - Buy a new phone number
+// POST /api/v1/phone-numbers - Provision a new phone number (purchased or forwarded)
 export async function POST(request: Request) {
   try {
     const supabase = await createClient();
@@ -91,13 +90,17 @@ export async function POST(request: Request) {
     }
 
     // Look up org's country
-    const { data: org } = await (supabase as any)
+    const { data: org, error: orgError } = await (supabase as any)
       .from("organizations")
       .select("country")
       .eq("id", membership.organization_id)
       .single();
 
-    const countryCode = org?.country || "US";
+    if (orgError || !org) {
+      return NextResponse.json({ error: "Failed to load organization" }, { status: 500 });
+    }
+
+    const countryCode = org.country || "US";
     const config = getCountryConfig(countryCode);
 
     const body = await request.json();
@@ -182,7 +185,10 @@ export async function POST(request: Request) {
         try {
           await releaseNumber(twilioSid);
         } catch (e) {
-          console.error("Failed to rollback Twilio number:", e);
+          console.error(
+            `CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`,
+            e
+          );
         }
         throw vapiError;
       }
@@ -240,14 +246,17 @@ export async function POST(request: Request) {
       try {
         await vapi.deletePhoneNumber(vapiPhoneNumberId);
       } catch (e) {
-        console.error("Failed to rollback Vapi phone number:", e);
+        console.error(`Failed to rollback Vapi phone number (ID=${vapiPhoneNumberId}):`, e);
       }
       if (twilioSid) {
         try {
           const { releaseNumber } = await import("@/lib/twilio/client");
           await releaseNumber(twilioSid);
         } catch (e) {
-          console.error("Failed to rollback Twilio number:", e);
+          console.error(
+            `CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`,
+            e
+          );
         }
       }
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -263,9 +272,10 @@ export async function POST(request: Request) {
       );
     }
     if (error?.message) {
+      const statusCode = error?.statusCode || error?.status || 500;
       return NextResponse.json(
         { error: error.message },
-        { status: error?.statusCode || 500 }
+        { status: typeof statusCode === "number" && statusCode >= 400 && statusCode < 600 ? statusCode : 500 }
       );
     }
     return NextResponse.json(

@@ -37,7 +37,11 @@ export async function searchAvailableNumbers(
       // Search by pattern: numbers starting with +61{digit}
       searchParams.contains = areaCode.replace(/^0/, "");
     } else {
-      searchParams.areaCode = parseInt(areaCode, 10);
+      const parsed = parseInt(areaCode, 10);
+      if (isNaN(parsed)) {
+        throw new Error(`Invalid area code "${areaCode}": must be numeric`);
+      }
+      searchParams.areaCode = parsed;
     }
   }
 

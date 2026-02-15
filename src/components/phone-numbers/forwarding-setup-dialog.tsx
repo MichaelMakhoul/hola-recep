@@ -22,7 +22,6 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
 import {
   Loader2,
@@ -34,12 +33,12 @@ import {
 } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
-  CARRIERS,
   getCarrierById,
+  getCarriersForCountry,
+  validatePhoneForCountry,
   formatInstructions,
   type CarrierInfo,
-} from "@/lib/phone-numbers/carrier-instructions";
-import { getCarriersForCountry, validatePhoneForCountry } from "@/lib/country-config";
+} from "@/lib/country-config";
 
 interface Assistant {
   id: string;
@@ -81,7 +80,7 @@ export function ForwardingSetupDialog({
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionError, setProvisionError] = useState<string | null>(null);
   const [provisioned, setProvisioned] = useState<ProvisionedResult | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
   const router = useRouter();
   const { toast } = useToast();
@@ -102,7 +101,7 @@ export function ForwardingSetupDialog({
     setIsProvisioning(false);
     setProvisionError(null);
     setProvisioned(null);
-    setCopied(false);
+    setCopiedText(null);
     setIsConfirming(false);
   };
 
@@ -144,8 +143,8 @@ export function ForwardingSetupDialog({
 
   const handleCopy = async (text: string) => {
     await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopiedText(text);
+    setTimeout(() => setCopiedText(null), 2000);
   };
 
   const handleConfirm = async (confirmed: boolean) => {
@@ -154,14 +153,17 @@ export function ForwardingSetupDialog({
     if (confirmed) {
       setIsConfirming(true);
       try {
-        await fetch(`/api/v1/phone-numbers/${provisioned.id}`, {
+        const resp = await fetch(`/api/v1/phone-numbers/${provisioned.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ forwardingStatus: "active" }),
         });
+        if (!resp.ok) {
+          throw new Error("Failed to update forwarding status");
+        }
         toast({
           title: "Forwarding set up!",
-          description: `Calls to ${formatPhoneNumber(userPhone)} will be forwarded to your AI assistant.`,
+          description: `Calls to ${formatPhoneNumber(userPhone, countryCode)} will be forwarded to your AI assistant.`,
         });
       } catch {
         toast({
@@ -209,7 +211,7 @@ export function ForwardingSetupDialog({
               className="h-8 w-8 shrink-0"
               onClick={() => handleCopy(enableCode)}
             >
-              {copied ? (
+              {copiedText === enableCode ? (
                 <Check className="h-3.5 w-3.5" />
               ) : (
                 <Copy className="h-3.5 w-3.5" />
@@ -231,7 +233,7 @@ export function ForwardingSetupDialog({
               className="h-8 w-8 shrink-0"
               onClick={() => handleCopy(disableCode)}
             >
-              {copied ? (
+              {copiedText === disableCode ? (
                 <Check className="h-3.5 w-3.5" />
               ) : (
                 <Copy className="h-3.5 w-3.5" />
@@ -342,7 +344,7 @@ export function ForwardingSetupDialog({
               <div className="flex items-center gap-2">
                 <Phone className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm font-medium">
-                  {formatPhoneNumber(userPhone)}
+                  {formatPhoneNumber(userPhone, countryCode)}
                 </span>
                 <ArrowRight className="h-3 w-3 text-muted-foreground" />
                 <span className="text-sm text-muted-foreground">
@@ -406,7 +408,7 @@ export function ForwardingSetupDialog({
                 Forward calls to this number:
               </p>
               <p className="mt-1 text-xl font-bold">
-                {formatPhoneNumber(provisioned.phone_number)}
+                {formatPhoneNumber(provisioned.phone_number, countryCode)}
               </p>
             </div>
 

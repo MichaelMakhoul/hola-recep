@@ -13,7 +13,7 @@ export const AU_CONFIG: CountryConfig = {
       // International format +61...
       if (cleaned.startsWith("61") && cleaned.length === 11) {
         const national = cleaned.slice(2);
-        // Landline: 02 9876 5432
+        // Landline: +61 2 9876 5432
         if (/^[2378]/.test(national)) {
           return `+61 ${national.slice(0, 1)} ${national.slice(1, 5)} ${national.slice(5)}`;
         }

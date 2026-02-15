@@ -213,6 +213,20 @@ export async function DELETE(
       return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
     }
 
+    // Release from Twilio first (paid resource — must not orphan)
+    if (phoneNumber.twilio_sid) {
+      try {
+        const { releaseNumber } = await import("@/lib/twilio/client");
+        await releaseNumber(phoneNumber.twilio_sid);
+      } catch (e) {
+        console.error("Failed to release from Twilio:", e);
+        return NextResponse.json(
+          { error: "Failed to release number from Twilio. Please try again or contact support." },
+          { status: 502 }
+        );
+      }
+    }
+
     // Delete from Vapi
     if (phoneNumber.vapi_phone_number_id) {
       const vapi = getVapiClient();
@@ -220,20 +234,12 @@ export async function DELETE(
         await vapi.deletePhoneNumber(phoneNumber.vapi_phone_number_id);
       } catch (e) {
         console.error("Failed to delete from Vapi:", e);
+        // Twilio already released — continue to delete DB record since Vapi
+        // numbers are free and will be cleaned up
       }
     }
 
-    // Release from Twilio if this was a Twilio-backed number
-    if (phoneNumber.twilio_sid) {
-      try {
-        const { releaseNumber } = await import("@/lib/twilio/client");
-        await releaseNumber(phoneNumber.twilio_sid);
-      } catch (e) {
-        console.error("Failed to release from Twilio:", e);
-      }
-    }
-
-    // Delete from database
+    // Delete from database only after external resources are cleaned up
     const { error } = await (supabase
       .from("phone_numbers") as any)
       .delete()

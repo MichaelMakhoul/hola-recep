@@ -11,6 +11,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getCountryConfig } from "@/lib/country-config";
 
 export interface SpamAnalysisResult {
   isSpam: boolean;
@@ -23,6 +24,7 @@ export interface SpamAnalysisResult {
 export interface CallMetadata {
   callerPhone: string;
   organizationId: string;
+  countryCode?: string;
   timestamp: Date;
   duration?: number;
   transcript?: string;
@@ -30,26 +32,6 @@ export interface CallMetadata {
 
 // Known spam patterns and indicators
 const SPAM_INDICATORS = {
-  // Common spam area codes (US)
-  suspiciousAreaCodes: [
-    "201", // High volume telemarketing
-    "202", // Government impersonation scams
-    "213", // Auto warranty scams
-    "267", // IRS scams
-    "315", // Insurance scams
-    "347", // Medicare scams
-    "407", // Vacation scams
-    "480", // Student loan scams
-    "619", // Business loan scams
-    "657", // Tech support scams
-    "720", // CBD/Cannabis spam
-    "773", // Social Security scams
-    "786", // Car warranty scams
-    "813", // Political spam
-    "904", // Time-share spam
-    "954", // Debt collector spam
-  ],
-
   // Patterns in caller ID names that suggest spam
   suspiciousCallerIdPatterns: [
     /^V\d+$/i, // V followed by numbers (V1234567)
@@ -112,7 +94,6 @@ function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   const normalized = phone.replace(/\D/g, "");
 
   // Country-aware validation
-  const { getCountryConfig } = require("@/lib/country-config");
   const config = getCountryConfig(countryCode);
 
   if (!config.phone.validateNational(normalized)) {
@@ -321,7 +302,7 @@ export async function analyzeCall(metadata: CallMetadata): Promise<SpamAnalysisR
   }
 
   // Analyze phone number
-  const phoneAnalysis = analyzePhoneNumber(metadata.callerPhone);
+  const phoneAnalysis = analyzePhoneNumber(metadata.callerPhone, metadata.countryCode);
   totalScore += phoneAnalysis.score;
   allReasons.push(...phoneAnalysis.reasons);
 

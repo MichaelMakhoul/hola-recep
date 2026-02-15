@@ -55,17 +55,17 @@ const COUNTRY_CONFIGS: Record<CountryCode, CountryConfig> = {
   AU: AU_CONFIG,
 };
 
-export const SUPPORTED_COUNTRIES: { code: CountryCode; name: string; flag: string }[] = [
-  { code: "US", name: "United States", flag: "US" },
-  { code: "AU", name: "Australia", flag: "AU" },
-];
+export const SUPPORTED_COUNTRIES: { code: CountryCode; name: string; flag: string }[] =
+  Object.values(COUNTRY_CONFIGS).map((c) => ({ code: c.code, name: c.name, flag: c.flag }));
 
 // ── Exports ────────────────────────────────────────────────────────
 
 export function getCountryConfig(code: CountryCode | string): CountryConfig {
-  const config = COUNTRY_CONFIGS[code as CountryCode];
+  const normalized = (code || "").toUpperCase() as CountryCode;
+  const config = COUNTRY_CONFIGS[normalized];
   if (!config) {
-    return COUNTRY_CONFIGS.US; // fallback
+    console.warn(`Unknown country code "${code}", falling back to US`);
+    return COUNTRY_CONFIGS.US;
   }
   return config;
 }
@@ -84,4 +84,12 @@ export function getCarriersForCountry(countryCode: CountryCode | string = "US"):
 
 export function getTimezonesForCountry(countryCode: CountryCode | string = "US"): TimezoneOption[] {
   return getCountryConfig(countryCode).timezones;
+}
+
+export function getCarrierById(id: string, countryCode: CountryCode | string = "US"): CarrierInfo | undefined {
+  return getCarriersForCountry(countryCode).find((c) => c.id === id);
+}
+
+export function formatInstructions(template: string, destinationNumber: string): string {
+  return template.replace(/\{destination_number\}/g, destinationNumber);
 }
