@@ -38,7 +38,13 @@ const updateAssistantSchema = z.object({
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
   promptConfig: promptConfigSchema.optional(),
-  settings: z.record(z.any()).optional(),
+  settings: z.object({
+    recordingEnabled: z.boolean().optional(),
+    recordingDisclosure: z.string().optional(),
+    maxCallDuration: z.number().optional(),
+    spamFilterEnabled: z.boolean().optional(),
+    industry: z.string().optional(),
+  }).passthrough().optional(),
 });
 
 // GET /api/v1/assistants/[id] - Get a single assistant
@@ -143,13 +149,13 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
-      // Only rebuild model when prompt, model, settings, or tool-related fields change
+      // Only rebuild model when prompt, model, or recording settings change
       const needsModelUpdate =
         validatedData.systemPrompt ||
         validatedData.promptConfig !== undefined ||
         validatedData.model ||
         validatedData.modelProvider ||
-        validatedData.settings !== undefined;
+        validatedData.settings?.recordingEnabled !== undefined;
 
       if (needsModelUpdate) {
         let toolIds: string[];

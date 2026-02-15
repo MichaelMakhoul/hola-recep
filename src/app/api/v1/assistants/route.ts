@@ -22,7 +22,13 @@ const createAssistantSchema = z.object({
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   promptConfig: promptConfigSchema.optional(),
-  settings: z.record(z.any()).optional(),
+  settings: z.object({
+    recordingEnabled: z.boolean().optional(),
+    recordingDisclosure: z.string().optional(),
+    maxCallDuration: z.number().optional(),
+    spamFilterEnabled: z.boolean().optional(),
+    industry: z.string().optional(),
+  }).passthrough().optional(),
 });
 
 // Map common voice provider names to Vapi's expected values
