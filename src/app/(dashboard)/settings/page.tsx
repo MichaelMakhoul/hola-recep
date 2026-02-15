@@ -30,21 +30,12 @@ interface Organization {
   primary_color: string | null;
   business_name: string | null;
   industry: string | null;
-  website_url: string | null;
-  phone: string | null;
-  address: string | null;
+  business_website: string | null;
+  business_phone: string | null;
+  business_address: string | null;
   timezone: string | null;
   country: string | null;
   business_hours: Record<string, { open: string; close: string } | null> | null;
-  notification_email: string | null;
-  notification_phone: string | null;
-  notification_preferences: {
-    email?: boolean;
-    sms?: boolean;
-    missedCalls?: boolean;
-    voicemails?: boolean;
-    appointments?: boolean;
-  } | null;
 }
 
 interface Membership {
@@ -69,9 +60,8 @@ export default async function SettingsPage() {
       role,
       organizations (
         id, name, slug, type, logo_url, primary_color,
-        business_name, industry, website_url, phone, address,
-        timezone, country, business_hours, notification_email, notification_phone,
-        notification_preferences
+        business_name, industry, business_website, business_phone, business_address,
+        timezone, country, business_hours
       )
     `
     )
@@ -172,9 +162,9 @@ export default async function SettingsPage() {
               country: organization.country || "US",
               businessName: organization.business_name || organization.name,
               industry: organization.industry || "",
-              websiteUrl: organization.website_url || "",
-              phone: organization.phone || "",
-              address: organization.address || "",
+              websiteUrl: organization.business_website || "",
+              phone: organization.business_phone || "",
+              address: organization.business_address || "",
               timezone: organization.timezone || "America/New_York",
               businessHours: organization.business_hours || null,
             }}

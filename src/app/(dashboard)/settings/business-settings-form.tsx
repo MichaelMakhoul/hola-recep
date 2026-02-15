@@ -115,9 +115,9 @@ export function BusinessSettingsForm({
           business_name: businessName,
           name: businessName, // Keep name in sync
           industry,
-          website_url: websiteUrl,
-          phone,
-          address,
+          business_website: websiteUrl,
+          business_phone: phone,
+          business_address: address,
           timezone,
           business_hours: businessHours,
         })
