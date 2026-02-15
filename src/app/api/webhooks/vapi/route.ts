@@ -11,22 +11,20 @@ import {
   handleCancelAppointment,
 } from "@/lib/calendar/tool-handlers";
 
-// Verify Vapi webhook signature
-function verifySignature(payload: string, signature: string | null): boolean {
+// Verify Vapi webhook using custom header secret
+// Vapi sends the secret via the x-webhook-secret header (configured in server.headers)
+function verifyWebhookSecret(request: Request): boolean {
   const secret = process.env.VAPI_WEBHOOK_SECRET;
-  if (!secret || !signature) return false;
+  if (!secret) return false;
 
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
+  const headerSecret = request.headers.get("x-webhook-secret");
+  if (!headerSecret) return false;
 
-  // Prevent timing attacks by checking lengths first
-  const sigBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expectedSignature);
-  if (sigBuffer.length !== expectedBuffer.length) return false;
+  const secretBuffer = Buffer.from(secret);
+  const headerBuffer = Buffer.from(headerSecret);
+  if (secretBuffer.length !== headerBuffer.length) return false;
 
-  return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+  return crypto.timingSafeEqual(secretBuffer, headerBuffer);
 }
 
 interface VapiToolCall {
@@ -38,39 +36,44 @@ interface VapiToolCall {
   };
 }
 
+interface VapiCall {
+  id: string;
+  orgId: string;
+  assistantId?: string;
+  phoneNumberId?: string;
+  type: string;
+  status: string;
+  endedReason?: string;
+  startedAt?: string;
+  endedAt?: string;
+  customer?: {
+    number?: string;
+  };
+  transcript?: string;
+  recordingUrl?: string;
+  summary?: string;
+  cost?: number;
+  metadata?: Record<string, unknown>;
+  analysis?: {
+    summary?: string;
+    structuredData?: Record<string, unknown>;
+    successEvaluation?: string;
+  };
+}
+
 interface VapiCallEvent {
   message: {
     type: string;
-    call?: {
-      id: string;
-      orgId: string;
-      assistantId?: string;
-      phoneNumberId?: string;
-      type: string;
-      status: string;
-      endedReason?: string;
-      startedAt?: string;
-      endedAt?: string;
-      customer?: {
-        number?: string;
-      };
-      transcript?: string;
-      recordingUrl?: string;
-      summary?: string;
-      cost?: number;
-      metadata?: Record<string, unknown>;
-      analysis?: {
-        summary?: string;
-        structuredData?: Record<string, unknown>;
-        successEvaluation?: string;
-      };
-    };
+    status?: string;
+    endedReason?: string;
+    call?: VapiCall;
     toolCallList?: VapiToolCall[];
     transcript?: string;
     artifact?: {
       transcript?: string;
       recordingUrl?: string;
       summary?: string;
+      messages?: unknown[];
     };
     analysis?: {
       summary?: string;
@@ -78,6 +81,7 @@ interface VapiCallEvent {
     costBreakdown?: {
       total?: number;
     };
+    cost?: number;
   };
 }
 
@@ -91,6 +95,79 @@ function mapStatus(vapiStatus: string): string {
     ended: "completed",
   };
   return statusMap[vapiStatus] || "completed";
+}
+
+// Map Vapi endedReason to our internal call status.
+// Unrecognized reasons are logged and default to "completed".
+function mapEndedReason(endedReason: string | undefined): string {
+  switch (endedReason) {
+    case "customer-ended-call":
+    case "assistant-ended-call":
+    case "customer-ended":
+    case "assistant-ended":
+      return "completed";
+    case "no-answer":
+      return "no-answer";
+    case "busy":
+      return "busy";
+    case "silence-timed-out":
+    case "pipeline-error-openai-llm-failed":
+    case "assistant-error":
+      return "failed";
+    case undefined:
+      return "completed";
+    default:
+      console.warn("Unrecognized endedReason, defaulting to completed:", endedReason);
+      return "completed";
+  }
+}
+
+/**
+ * Resolve the local phone number record, assistant ID, and org from a Vapi call.
+ * Used by both status-update and end-of-call-report handlers.
+ */
+async function resolveCallContext(
+  supabase: ReturnType<typeof createAdminClient>,
+  call: VapiCall
+): Promise<{
+  phoneNumber: { id: string; organization_id: string; assistant_id: string | null } | null;
+  assistantId: string | null;
+}> {
+  const { data: phoneNumber, error: phoneError } = await (supabase
+    .from("phone_numbers") as any)
+    .select("id, organization_id, assistant_id")
+    .eq("vapi_phone_number_id", call.phoneNumberId)
+    .single();
+
+  if (phoneError) {
+    console.error("Failed to look up phone number:", {
+      vapiCallId: call.id,
+      phoneNumberId: call.phoneNumberId,
+      error: phoneError,
+    });
+  }
+
+  if (!phoneNumber) return { phoneNumber: null, assistantId: null };
+
+  let assistantId = phoneNumber.assistant_id;
+  if (call.assistantId) {
+    const { data: assistant, error: assistantError } = await (supabase
+      .from("assistants") as any)
+      .select("id")
+      .eq("vapi_assistant_id", call.assistantId)
+      .single();
+
+    if (assistantError && assistantError.code !== "PGRST116") {
+      console.error("Failed to look up assistant:", {
+        vapiCallId: call.id,
+        vapiAssistantId: call.assistantId,
+        error: assistantError,
+      });
+    }
+    if (assistant) assistantId = assistant.id;
+  }
+
+  return { phoneNumber, assistantId };
 }
 
 // POST /api/webhooks/vapi - Handle Vapi webhook events
@@ -107,9 +184,8 @@ export async function POST(request: Request) {
     }
 
     const payload = await request.text();
-    const signature = request.headers.get("x-vapi-signature");
 
-    // SECURITY: Always verify webhook signature
+    // SECURITY: Verify webhook using shared secret header
     // Only skip in explicit test mode with TEST_MODE=true
     const skipVerification = process.env.TEST_MODE === "true" && process.env.NODE_ENV !== "production";
 
@@ -119,9 +195,9 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Webhook not configured" }, { status: 500 });
       }
 
-      if (!verifySignature(payload, signature)) {
-        console.error("Invalid webhook signature");
-        return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+      if (!verifyWebhookSecret(request)) {
+        console.error("Invalid webhook secret");
+        return NextResponse.json({ error: "Invalid webhook secret" }, { status: 401 });
       }
     }
 
@@ -130,67 +206,91 @@ export async function POST(request: Request) {
 
     console.log("Vapi webhook received:", event.message.type);
 
-    // Handle different event types
+    // Vapi sends: status-update, end-of-call-report, tool-calls, transcript, etc.
     switch (event.message.type) {
-      case "call.started":
-      case "call-started": {
+      case "status-update": {
         const call = event.message.call;
+        const status = event.message.status || call?.status;
         if (!call) break;
 
-        // Find our phone number by Vapi phone number ID
-        const { data: phoneNumber } = await (supabase
-          .from("phone_numbers") as any)
-          .select("id, organization_id, assistant_id")
-          .eq("vapi_phone_number_id", call.phoneNumberId)
-          .single();
+        if (status === "in-progress") {
+          // Call started — create the call record
+          const { phoneNumber, assistantId } = await resolveCallContext(supabase, call);
 
-        if (!phoneNumber) {
-          console.error("Phone number not found for Vapi ID:", call.phoneNumberId);
-          break;
-        }
-
-        // Find our assistant by Vapi assistant ID
-        let assistantId = phoneNumber.assistant_id;
-        if (call.assistantId) {
-          const { data: assistant } = await (supabase
-            .from("assistants") as any)
-            .select("id")
-            .eq("vapi_assistant_id", call.assistantId)
-            .single();
-          if (assistant) {
-            assistantId = assistant.id;
+          if (!phoneNumber) {
+            console.error("Phone number not found for Vapi ID:", call.phoneNumberId);
+            break;
           }
-        }
 
-        // Create call record
-        const { error: insertError } = await (supabase.from("calls") as any).insert({
-          organization_id: phoneNumber.organization_id,
-          assistant_id: assistantId,
-          phone_number_id: phoneNumber.id,
-          vapi_call_id: call.id,
-          caller_phone: call.customer?.number,
-          direction: call.type === "outbound" ? "outbound" : "inbound",
-          status: mapStatus(call.status),
-          started_at: call.startedAt,
-        });
+          // Check if call record already exists, create if not
+          const { data: existingCall, error: lookupErr } = await (supabase
+            .from("calls") as any)
+            .select("id")
+            .eq("vapi_call_id", call.id)
+            .single();
 
-        if (insertError) {
-          console.error("Failed to create call record:", {
-            vapiCallId: call.id,
-            organizationId: phoneNumber.organization_id,
-            error: insertError,
-          });
-          return NextResponse.json(
-            { error: "Failed to record call" },
-            { status: 500 }
-          );
+          if (lookupErr && lookupErr.code !== "PGRST116") {
+            console.error("Failed to check for existing call record:", {
+              vapiCallId: call.id,
+              error: lookupErr,
+            });
+          }
+
+          if (!existingCall) {
+            const { error: insertError } = await (supabase.from("calls") as any).insert({
+              organization_id: phoneNumber.organization_id,
+              assistant_id: assistantId,
+              phone_number_id: phoneNumber.id,
+              vapi_call_id: call.id,
+              caller_phone: call.customer?.number,
+              direction: call.type === "outbound" ? "outbound" : "inbound",
+              status: "in-progress",
+              started_at: call.startedAt,
+            });
+
+            if (insertError) {
+              console.error("Failed to create call record:", {
+                vapiCallId: call.id,
+                organizationId: phoneNumber.organization_id,
+                error: insertError,
+              });
+              return NextResponse.json(
+                { error: "Failed to record call" },
+                { status: 500 }
+              );
+            }
+          } else {
+            const { error: updateError } = await (supabase.from("calls") as any)
+              .update({ status: "in-progress", started_at: call.startedAt })
+              .eq("vapi_call_id", call.id);
+
+            if (updateError) {
+              console.error("Failed to update call to in-progress:", {
+                vapiCallId: call.id,
+                error: updateError,
+              });
+            }
+          }
+        } else {
+          // Other status updates (queued, ringing, forwarding, ended)
+          const { error: statusError } = await (supabase
+            .from("calls") as any)
+            .update({ status: mapStatus(status || call.status) })
+            .eq("vapi_call_id", call.id);
+
+          if (statusError) {
+            console.error("Failed to update call status:", {
+              vapiCallId: call.id,
+              targetStatus: mapStatus(status || call.status),
+              error: statusError,
+            });
+          }
         }
 
         break;
       }
 
-      case "call.ended":
-      case "call-ended": {
+      case "end-of-call-report": {
         const call = event.message.call;
         if (!call) break;
 
@@ -215,14 +315,71 @@ export async function POST(request: Request) {
         const recordingUrl =
           call.recordingUrl || event.message.artifact?.recordingUrl;
         const cost =
-          call.cost || event.message.costBreakdown?.total;
+          call.cost || event.message.cost || event.message.costBreakdown?.total;
+        const endedReason =
+          event.message.endedReason || call.endedReason;
 
-        // Get the call record to find organization_id
-        const { data: existingCall } = await (supabase
+        // Get or create the call record
+        const { data: foundCall, error: lookupError } = await (supabase
           .from("calls") as any)
           .select("id, organization_id, caller_phone")
           .eq("vapi_call_id", call.id)
           .single();
+
+        if (lookupError && lookupError.code !== "PGRST116") {
+          console.error("Failed to look up call record:", {
+            vapiCallId: call.id,
+            error: lookupError,
+          });
+        }
+
+        let existingCall = foundCall;
+
+        // If the call record doesn't exist, it means the status-update webhook
+        // was not received (network failure, timeout, etc.). Create the record
+        // here to ensure we never lose call data.
+        if (!existingCall) {
+          const { phoneNumber, assistantId } = await resolveCallContext(supabase, call);
+
+          if (!phoneNumber) {
+            console.error("Cannot create call record: phone number not found", {
+              vapiCallId: call.id,
+              vapiPhoneNumberId: call.phoneNumberId,
+            });
+            return NextResponse.json(
+              { error: "Phone number not found" },
+              { status: 500 }
+            );
+          } else {
+            const { data: newCall, error: insertError } = await (supabase.from("calls") as any)
+              .insert({
+                organization_id: phoneNumber.organization_id,
+                assistant_id: assistantId,
+                phone_number_id: phoneNumber.id,
+                vapi_call_id: call.id,
+                caller_phone: call.customer?.number,
+                direction: call.type === "outbound" ? "outbound" : "inbound",
+                status: "in-progress",
+                started_at: call.startedAt,
+              })
+              .select("id, organization_id, caller_phone")
+              .single();
+
+            if (insertError) {
+              console.error("Failed to create call record in end-of-call-report fallback:", {
+                vapiCallId: call.id,
+                organizationId: phoneNumber.organization_id,
+                error: insertError,
+              });
+              return NextResponse.json(
+                { error: "Failed to record call" },
+                { status: 500 }
+              );
+            }
+
+            existingCall = newCall;
+          }
+        }
 
         // Run spam analysis
         let spamAnalysis = null;
@@ -248,14 +405,7 @@ export async function POST(request: Request) {
           }
         }
 
-        // Determine call status
-        const callStatus = call.endedReason === "customer-ended" || call.endedReason === "assistant-ended"
-          ? "completed"
-          : call.endedReason === "no-answer"
-          ? "no-answer"
-          : call.endedReason === "busy"
-          ? "busy"
-          : "completed";
+        const callStatus = mapEndedReason(endedReason);
 
         // Extract structured caller data from Vapi analysis
         const collectedData = call.analysis?.structuredData ?? null;
@@ -267,7 +417,7 @@ export async function POST(request: Request) {
           (collectedData as Record<string, unknown> | null)?.name as string | undefined ??
           null;
 
-        // Update call record with spam analysis and collected data
+        // Update call record with full end-of-call data
         const { error: updateError } = await (supabase
           .from("calls") as any)
           .update({
@@ -283,7 +433,7 @@ export async function POST(request: Request) {
             ...(collectedData && { collected_data: collectedData }),
             ...(callerName && { caller_name: callerName }),
             metadata: {
-              endedReason: call.endedReason,
+              endedReason,
               analysis: call.analysis,
               successEvaluation,
               spamAnalysis: spamAnalysis ? {
@@ -303,21 +453,24 @@ export async function POST(request: Request) {
         }
 
         // Increment call usage for billing (skip for spam calls)
-        // Using call-based pricing: each answered call counts as 1, regardless of duration
         const shouldTrackUsage = callStatus === "completed" &&
           (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
         if (shouldTrackUsage && existingCall) {
           const { success, shouldUpgrade } = await incrementCallUsage(existingCall.organization_id);
+          if (!success) {
+            console.error("Failed to increment call usage:", {
+              organizationId: existingCall.organization_id,
+              vapiCallId: call.id,
+            });
+          }
           if (shouldUpgrade) {
             console.log(`Organization ${existingCall.organization_id} approaching call limit`);
-            // In production, you might want to send a notification here
           }
         }
 
         // Send notifications based on call outcome (skip for spam)
         if (existingCall && !spamAnalysis?.isSpam) {
-          // Check if this was a missed call (no answer or very short duration)
           if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
             await sendMissedCallNotification({
               organizationId: existingCall.organization_id,
@@ -329,10 +482,8 @@ export async function POST(request: Request) {
             }).catch((err) => console.error("Failed to send missed call notification:", err));
           }
 
-          // Check if there's a voicemail (recording URL with short duration could be voicemail)
+          // Heuristic: recordings between 10-120 seconds are likely voicemails
           if (recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10) {
-            // This heuristic assumes voicemails are typically 10-120 seconds
-            // In production, you'd have a separate voicemail detection mechanism
             await sendVoicemailNotification({
               organizationId: existingCall.organization_id,
               callId: existingCall.id,
@@ -348,28 +499,23 @@ export async function POST(request: Request) {
         break;
       }
 
-      case "transcript":
-      case "transcript-update": {
+      case "transcript": {
         const call = event.message.call;
         const transcript = event.message.transcript;
         if (!call || !transcript) break;
 
-        await (supabase
+        const { error: transcriptError } = await (supabase
           .from("calls") as any)
           .update({ transcript })
           .eq("vapi_call_id", call.id);
 
-        break;
-      }
-
-      case "status-update": {
-        const call = event.message.call;
-        if (!call) break;
-
-        await (supabase
-          .from("calls") as any)
-          .update({ status: mapStatus(call.status) })
-          .eq("vapi_call_id", call.id);
+        if (transcriptError) {
+          console.error("Failed to update transcript:", {
+            vapiCallId: call.id,
+            transcriptLength: transcript?.length,
+            error: transcriptError,
+          });
+        }
 
         break;
       }

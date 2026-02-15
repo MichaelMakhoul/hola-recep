@@ -188,26 +188,17 @@ export async function PATCH(
       if (appUrl) {
         vapiUpdate.server = {
           url: `${appUrl}/api/webhooks/vapi`,
-          ...(webhookSecret && { secret: webhookSecret }),
           timeoutSeconds: 20,
+          ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
         };
       }
 
-      // Only include calendar tools if the org has a calendar integration
-      const { data: calIntegration } = await (supabase as any)
-        .from("calendar_integrations")
-        .select("id")
-        .eq("organization_id", membership.organization_id)
-        .eq("is_active", true)
-        .limit(1);
-
-      if (calIntegration && calIntegration.length > 0) {
-        vapiUpdate.tools = [
-          calendarTools.checkAvailability,
-          calendarTools.bookAppointment,
-          calendarTools.cancelAppointment,
-        ];
-      }
+      // Always include calendar tools — built-in booking handles orgs without Cal.com
+      vapiUpdate.tools = [
+        calendarTools.checkAvailability,
+        calendarTools.bookAppointment,
+        calendarTools.cancelAppointment,
+      ];
 
       // Build analysis plan from prompt config if provided
       if (validatedData.promptConfig) {

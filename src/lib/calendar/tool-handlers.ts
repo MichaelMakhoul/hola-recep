@@ -18,6 +18,231 @@ interface ToolResult {
   data?: Record<string, unknown>;
 }
 
+interface BusinessHours {
+  open: string; // "09:00"
+  close: string; // "17:00"
+}
+
+interface OrgSchedule {
+  timezone: string;
+  businessHours: Record<string, BusinessHours | null>;
+}
+
+const SLOT_DURATION_MINUTES = 30;
+
+// ─── Shared helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Fetch org business hours and timezone. Throws on DB error so callers
+ * can surface a user-friendly message instead of silently skipping validation.
+ */
+async function getOrgSchedule(
+  organizationId: string
+): Promise<OrgSchedule | null> {
+  const supabase = createAdminClient();
+  const { data: org, error } = await (supabase as any)
+    .from("organizations")
+    .select("business_hours, timezone")
+    .eq("id", organizationId)
+    .single();
+
+  if (error) {
+    console.error("Failed to fetch org schedule:", { organizationId, error });
+    throw new Error(`Failed to fetch org schedule: ${error.message}`);
+  }
+
+  if (!org || !org.business_hours) return null;
+
+  return {
+    timezone: org.timezone || "America/New_York",
+    businessHours: org.business_hours,
+  };
+}
+
+/**
+ * Get the business hours for a specific date, resolving the day name
+ * in the org's timezone. Returns null if closed that day.
+ */
+function getHoursForDate(
+  schedule: OrgSchedule,
+  date: string
+): { open: number; close: number } | null {
+  // Use noon to avoid DST-transition ambiguity at midnight boundaries
+  const dateObj = new Date(`${date}T12:00:00`);
+  const dayName = dateObj
+    .toLocaleDateString("en-US", { weekday: "long", timeZone: schedule.timezone })
+    .toLowerCase();
+
+  const hours: BusinessHours | null = schedule.businessHours[dayName];
+  if (!hours || !hours.open || !hours.close) return null;
+
+  const [openH, openM] = hours.open.split(":").map(Number);
+  const [closeH, closeM] = hours.close.split(":").map(Number);
+  return { open: openH * 60 + openM, close: closeH * 60 + closeM };
+}
+
+/**
+ * Extract the hour and minute of a Date in a specific timezone.
+ */
+function getTimeInTimezone(d: Date, timezone: string): { h: number; m: number } {
+  const timeStr = d.toLocaleTimeString("en-US", {
+    timeZone: timezone,
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const [h, m] = timeStr.split(":").map(Number);
+  return { h, m };
+}
+
+/**
+ * Format a Date as "Monday, March 15" and "2:00 PM" in a given timezone.
+ */
+function formatDateTimeForVoice(
+  d: Date,
+  timezone: string
+): { dateStr: string; timeStr: string } {
+  return {
+    dateStr: d.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      timeZone: timezone,
+    }),
+    timeStr: d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: timezone,
+    }),
+  };
+}
+
+function formatTime(h: number, m: number): string {
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 || 12;
+  const mins = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
+  return `${hour12}${mins} ${period}`;
+}
+
+// ─── Built-in availability ──────────────────────────────────────────────────
+
+/**
+ * Compute available 30-minute slots for a given date using the org's
+ * business hours minus any existing (non-cancelled) appointments.
+ *
+ * @returns ISO-like datetime strings in the org's local time (no TZ offset),
+ *          e.g., "2025-03-15T09:00:00". Throws on DB errors.
+ */
+async function getBuiltInAvailability(
+  organizationId: string,
+  date: string,
+  schedule?: OrgSchedule | null
+): Promise<string[]> {
+  const resolvedSchedule = schedule ?? (await getOrgSchedule(organizationId));
+  if (!resolvedSchedule) return [];
+
+  const hours = getHoursForDate(resolvedSchedule, date);
+  if (!hours) return []; // Closed
+
+  // Generate slot start times in org-local time
+  const slots: string[] = [];
+  for (let m = hours.open; m + SLOT_DURATION_MINUTES <= hours.close; m += SLOT_DURATION_MINUTES) {
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    slots.push(`${date}T${hh}:${mm}:00`);
+  }
+
+  if (slots.length === 0) return [];
+
+  // Get existing appointments for this date
+  const supabase = createAdminClient();
+  const dayStart = `${date}T00:00:00`;
+  const dayEnd = `${date}T23:59:59`;
+
+  const { data: existing, error: apptError } = await (supabase as any)
+    .from("appointments")
+    .select("start_time, duration_minutes, end_time")
+    .eq("organization_id", organizationId)
+    .gte("start_time", dayStart)
+    .lte("start_time", dayEnd)
+    .in("status", ["confirmed", "pending"]);
+
+  if (apptError) {
+    console.error("Failed to fetch existing appointments:", { organizationId, date, error: apptError });
+    throw new Error(`Failed to fetch appointments: ${apptError.message}`);
+  }
+
+  const appointments = (existing || []) as {
+    start_time: string;
+    duration_minutes: number | null;
+    end_time: string | null;
+  }[];
+
+  // Filter out slots that overlap with existing appointments.
+  // Compare in org-local minutes-since-midnight to avoid server-TZ vs org-TZ mismatch.
+  const { timezone } = resolvedSchedule;
+
+  return slots.filter((slotIso) => {
+    const [, timeStr] = slotIso.split("T");
+    const [slotH, slotM] = timeStr.split(":").map(Number);
+    const slotStartMin = slotH * 60 + slotM;
+    const slotEndMin = slotStartMin + SLOT_DURATION_MINUTES;
+
+    return !appointments.some((appt) => {
+      const { h: aH, m: aM } = getTimeInTimezone(new Date(appt.start_time), timezone);
+      const apptStartMin = aH * 60 + aM;
+
+      let apptEndMin: number;
+      if (appt.end_time) {
+        const { h: eH, m: eM } = getTimeInTimezone(new Date(appt.end_time), timezone);
+        apptEndMin = eH * 60 + eM;
+      } else {
+        apptEndMin = apptStartMin + (appt.duration_minutes || SLOT_DURATION_MINUTES);
+      }
+
+      return slotStartMin < apptEndMin && slotEndMin > apptStartMin;
+    });
+  });
+}
+
+/**
+ * Format built-in availability slots for a voice response.
+ */
+function formatBuiltInAvailabilityForVoice(
+  date: string,
+  slots: string[],
+  timezone: string
+): string {
+  if (slots.length === 0) {
+    return "I'm sorry, there are no available appointments on that date. Would you like to check a different day?";
+  }
+
+  const dateObj = new Date(`${date}T12:00:00`);
+  const dateStr = dateObj.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone: timezone,
+  });
+
+  const slotsToShow = slots.slice(0, 5);
+  const timeStrings = slotsToShow.map((iso) => {
+    const t = new Date(iso);
+    return t.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: timezone,
+    });
+  });
+
+  const more = slots.length > 5 ? ` and ${slots.length - 5} more` : "";
+  return `On ${dateStr}, I have openings at ${timeStrings.join(", ")}${more}. Which time works best for you?`;
+}
+
+// ─── Public handlers ────────────────────────────────────────────────────────
+
 export async function handleBookAppointment(
   organizationId: string,
   args: {
@@ -73,23 +298,212 @@ export async function handleBookAppointment(
   const sanitizedName = sanitizeString(name, 100);
   const sanitizedNotes = notes ? sanitizeString(notes, 500) : undefined;
 
+  // ── Try Cal.com first ─────────────────────────────────────────────────
   const calClient = await getCalComClient(organizationId);
-  if (!calClient) {
+
+  if (calClient) {
+    return bookViaCal(
+      calClient,
+      organizationId,
+      datetime,
+      sanitizedName,
+      phone,
+      email,
+      sanitizedNotes
+    );
+  }
+
+  // ── Built-in booking (no Cal.com configured) ──────────────────────────
+  console.log("Using built-in booking (no Cal.com client):", { organizationId });
+  return bookInternal(
+    organizationId,
+    datetime,
+    sanitizedName,
+    phone,
+    email,
+    sanitizedNotes
+  );
+}
+
+export async function handleCheckAvailability(
+  organizationId: string,
+  args: { date?: string }
+): Promise<ToolResult> {
+  const { date } = args;
+
+  if (!date) {
+    return {
+      success: false,
+      message: "What date would you like me to check availability for?",
+    };
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return {
+      success: false,
+      message: "I need the date in a standard format. Could you say the date again?",
+    };
+  }
+
+  // ── Try Cal.com first ─────────────────────────────────────────────────
+  const calClient = await getCalComClient(organizationId);
+
+  if (calClient) {
+    return checkAvailabilityViaCal(calClient, organizationId, date);
+  }
+
+  // ── Built-in availability (no Cal.com configured) ─────────────────────
+  console.log("Using built-in availability (no Cal.com client):", { organizationId });
+  try {
+    const schedule = await getOrgSchedule(organizationId);
+    const timezone = schedule?.timezone || "America/New_York";
+    const slots = await getBuiltInAvailability(organizationId, date, schedule);
+    return {
+      success: true,
+      message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
+    };
+  } catch (error: any) {
+    console.error("Built-in availability error:", { organizationId, date, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
-        "I'm sorry, I'm unable to book appointments right now. Can I take your information and have someone call you back to schedule?",
+        "I'm having trouble checking the calendar right now. Would you like me to take your information instead?",
+    };
+  }
+}
+
+export async function handleCancelAppointment(
+  organizationId: string,
+  args: { phone?: string; reason?: string }
+): Promise<ToolResult> {
+  const { phone, reason } = args;
+
+  if (!phone) {
+    return {
+      success: false,
+      message:
+        "I need your phone number to look up your appointment. What's the phone number you booked with?",
     };
   }
 
   const supabase = createAdminClient();
-  const { data: integration } = await (supabase as any)
+
+  const { data: appointments, error: queryError } = await (supabase as any)
+    .from("appointments")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .eq("attendee_phone", phone)
+    .in("status", ["confirmed", "pending"])
+    .order("start_time", { ascending: true })
+    .limit(1);
+
+  if (queryError) {
+    console.error("Failed to query appointments for cancellation:", { organizationId, phone, error: queryError });
+    return {
+      success: false,
+      message:
+        "I'm having trouble looking up your appointment right now. Would you like me to have someone call you back?",
+    };
+  }
+
+  const appointment = appointments?.[0] ?? null;
+
+  if (!appointment) {
+    return {
+      success: false,
+      message:
+        "I wasn't able to find an upcoming appointment with that phone number. Could you double-check the number you booked with?",
+    };
+  }
+
+  try {
+    if (appointment.external_id) {
+      const calClient = await getCalComClient(organizationId);
+      if (calClient && appointment.metadata?.calComBookingId) {
+        await calClient.cancelBooking(
+          appointment.metadata.calComBookingId,
+          reason || "Cancelled by caller"
+        );
+      } else {
+        console.error("Cannot cancel Cal.com booking: missing client or booking ID", {
+          organizationId,
+          appointmentId: appointment.id,
+          externalId: appointment.external_id,
+          hasCalClient: !!calClient,
+          hasBookingId: !!appointment.metadata?.calComBookingId,
+        });
+        return {
+          success: false,
+          message:
+            "I'm having trouble cancelling the external calendar booking. Let me have someone follow up with you to make sure this is fully cancelled.",
+        };
+      }
+    }
+
+    const { error: cancelDbError } = await (supabase as any)
+      .from("appointments")
+      .update({ status: "cancelled" })
+      .eq("id", appointment.id);
+
+    if (cancelDbError) {
+      console.error("Failed to update appointment status locally:", cancelDbError);
+      return {
+        success: false,
+        message:
+          "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
+      };
+    }
+
+    const schedule = await getOrgSchedule(organizationId).catch(() => null);
+    const timezone = schedule?.timezone || "America/New_York";
+    const { dateStr, timeStr } = formatDateTimeForVoice(
+      new Date(appointment.start_time),
+      timezone
+    );
+
+    return {
+      success: true,
+      message: `Your appointment on ${dateStr} at ${timeStr} has been cancelled. Would you like to reschedule or is there anything else I can help with?`,
+    };
+  } catch (error: any) {
+    console.error("Cancel appointment error:", { organizationId, message: error.message, stack: error.stack });
+    return {
+      success: false,
+      message:
+        "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
+    };
+  }
+}
+
+// ─── Cal.com helpers ────────────────────────────────────────────────────────
+
+async function bookViaCal(
+  calClient: NonNullable<Awaited<ReturnType<typeof getCalComClient>>>,
+  organizationId: string,
+  datetime: string,
+  sanitizedName: string,
+  phone: string,
+  email: string | undefined,
+  sanitizedNotes: string | undefined
+): Promise<ToolResult> {
+  const supabase = createAdminClient();
+
+  const { data: integration, error: integrationError } = await (supabase as any)
     .from("calendar_integrations")
     .select("calendar_id, settings")
     .eq("organization_id", organizationId)
     .eq("provider", "cal_com")
     .eq("is_active", true)
     .single();
+
+  if (integrationError && integrationError.code !== "PGRST116") {
+    console.error("Failed to fetch calendar integration:", { organizationId, error: integrationError });
+    return {
+      success: false,
+      message:
+        "I'm having trouble accessing the calendar system right now. Would you like me to take your information instead?",
+    };
+  }
 
   if (!integration || !integration.calendar_id) {
     return {
@@ -159,21 +573,10 @@ export async function handleBookAppointment(
       };
     }
 
-    // Send notification
+    // Send notification — best-effort timezone fetch
     const appointmentDate = new Date(datetime);
-    await sendAppointmentNotification({
-      organizationId,
-      callerPhone: phone,
-      callerName: sanitizedName,
-      appointmentDate,
-      appointmentTime: appointmentDate.toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      }),
-    }).catch((err) => {
-      console.error("Failed to send appointment notification:", err);
-    });
+    const calSchedule = await getOrgSchedule(organizationId).catch(() => null);
+    sendNotification(organizationId, phone, sanitizedName, appointmentDate, calSchedule?.timezone);
 
     return {
       success: true,
@@ -194,7 +597,7 @@ export async function handleBookAppointment(
       };
     }
 
-    console.error("Book appointment error:", error.message);
+    console.error("Book appointment error:", { organizationId, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
@@ -203,36 +606,28 @@ export async function handleBookAppointment(
   }
 }
 
-export async function handleCheckAvailability(
+async function checkAvailabilityViaCal(
+  calClient: NonNullable<Awaited<ReturnType<typeof getCalComClient>>>,
   organizationId: string,
-  args: { date?: string }
+  date: string
 ): Promise<ToolResult> {
-  const { date } = args;
-
-  if (!date) {
-    return {
-      success: false,
-      message: "What date would you like me to check availability for?",
-    };
-  }
-
-  const calClient = await getCalComClient(organizationId);
-  if (!calClient) {
-    return {
-      success: false,
-      message:
-        "I'm sorry, I'm unable to check appointment availability right now.",
-    };
-  }
-
   const supabase = createAdminClient();
-  const { data: integration } = await (supabase as any)
+
+  const { data: integration, error: integrationError } = await (supabase as any)
     .from("calendar_integrations")
     .select("calendar_id")
     .eq("organization_id", organizationId)
     .eq("provider", "cal_com")
     .eq("is_active", true)
     .single();
+
+  if (integrationError && integrationError.code !== "PGRST116") {
+    console.error("Failed to fetch calendar integration:", { organizationId, error: integrationError });
+    return {
+      success: false,
+      message: "I'm having trouble accessing the calendar right now. Would you like me to take your information instead?",
+    };
+  }
 
   if (!integration || !integration.calendar_id) {
     return {
@@ -261,7 +656,7 @@ export async function handleCheckAvailability(
 
     return { success: true, message: formatAvailabilityForVoice(availability) };
   } catch (error: any) {
-    console.error("Check availability error:", error.message);
+    console.error("Check availability error:", { organizationId, date, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
@@ -270,83 +665,156 @@ export async function handleCheckAvailability(
   }
 }
 
-export async function handleCancelAppointment(
+// ─── Built-in booking helper ────────────────────────────────────────────────
+
+async function bookInternal(
   organizationId: string,
-  args: { phone?: string; reason?: string }
+  datetime: string,
+  sanitizedName: string,
+  phone: string,
+  email: string | undefined,
+  sanitizedNotes: string | undefined
 ): Promise<ToolResult> {
-  const { phone, reason } = args;
-
-  if (!phone) {
-    return {
-      success: false,
-      message:
-        "I need your phone number to look up your appointment. What's the phone number you booked with?",
-    };
-  }
-
   const supabase = createAdminClient();
 
-  const { data: appointments } = await (supabase as any)
-    .from("appointments")
-    .select("*")
-    .eq("organization_id", organizationId)
-    .eq("attendee_phone", phone)
-    .in("status", ["confirmed", "pending"])
-    .order("start_time", { ascending: true })
-    .limit(1);
-
-  const appointment = appointments?.[0] ?? null;
-
-  if (!appointment) {
+  const startDate = new Date(datetime);
+  if (isNaN(startDate.getTime())) {
     return {
       success: false,
       message:
-        "I wasn't able to find an upcoming appointment with that phone number. Could you double-check the number you booked with?",
+        "I didn't understand that date and time. Could you say it again?",
     };
   }
 
+  const endDate = new Date(startDate.getTime() + SLOT_DURATION_MINUTES * 60_000);
+
+  // 1. Validate against business hours
+  let schedule: OrgSchedule | null;
   try {
-    if (appointment.external_id) {
-      const calClient = await getCalComClient(organizationId);
-      if (calClient && appointment.metadata?.calComBookingId) {
-        await calClient.cancelBooking(
-          appointment.metadata.calComBookingId,
-          reason || "Cancelled by caller"
-        );
-      }
+    schedule = await getOrgSchedule(organizationId);
+  } catch (error) {
+    console.error("Failed to get org schedule for booking:", { organizationId, error });
+    return {
+      success: false,
+      message:
+        "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
+    };
+  }
+
+  if (schedule) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: schedule.timezone,
+    }).formatToParts(startDate);
+    const yr = parts.find((p) => p.type === "year")!.value;
+    const mo = parts.find((p) => p.type === "month")!.value;
+    const da = parts.find((p) => p.type === "day")!.value;
+    const localDate = `${yr}-${mo}-${da}`;
+
+    const hours = getHoursForDate(schedule, localDate);
+
+    if (!hours) {
+      return {
+        success: false,
+        message:
+          "I'm sorry, we're closed on that day. Would you like to pick a different date?",
+      };
     }
 
-    const { error: cancelDbError } = await (supabase as any)
-      .from("appointments")
-      .update({ status: "cancelled" })
-      .eq("id", appointment.id);
+    // Extract hour:minute in the org's timezone, not the server's
+    const { h: reqH, m: reqM } = getTimeInTimezone(startDate, schedule.timezone);
+    const reqMinutes = reqH * 60 + reqM;
+    const reqEndMinutes = reqMinutes + SLOT_DURATION_MINUTES;
 
-    if (cancelDbError) {
-      console.error("Failed to update appointment status locally:", cancelDbError);
+    if (reqMinutes < hours.open || reqEndMinutes > hours.close) {
+      const openStr = formatTime(Math.floor(hours.open / 60), hours.open % 60);
+      const closeStr = formatTime(Math.floor(hours.close / 60), hours.close % 60);
+      return {
+        success: false,
+        message: `That time is outside our business hours. We're open from ${openStr} to ${closeStr}. Would you like to pick a time within those hours?`,
+      };
     }
+  }
 
-    const startDate = new Date(appointment.start_time);
-    const dateStr = startDate.toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-    });
-    const timeStr = startDate.toLocaleTimeString("en-US", {
+  // 2. Insert appointment — the DB exclusion constraint (no_overlapping_appointments)
+  //    prevents double-bookings atomically, so we rely on INSERT failure for conflicts.
+  const bookingEmail =
+    email || `booking-${crypto.randomUUID()}@noreply.holarecep.com`;
+
+  const { data: appointment, error: dbError } = await (supabase as any)
+    .from("appointments")
+    .insert({
+      organization_id: organizationId,
+      provider: "internal",
+      attendee_name: sanitizedName,
+      attendee_phone: phone,
+      attendee_email: bookingEmail,
+      start_time: startDate.toISOString(),
+      end_time: endDate.toISOString(),
+      duration_minutes: SLOT_DURATION_MINUTES,
+      status: "confirmed",
+      notes: sanitizedNotes,
+      metadata: { source: "ai_receptionist" },
+    })
+    .select("id")
+    .single();
+
+  if (dbError) {
+    // Exclusion constraint violation = overlapping appointment
+    if (dbError.code === "23P01") {
+      return {
+        success: false,
+        message:
+          "I'm sorry, that time slot is no longer available. Would you like me to check for other available times?",
+      };
+    }
+    console.error("Failed to insert internal appointment:", dbError);
+    return {
+      success: false,
+      message:
+        "I'm having trouble completing the booking right now. Let me take your information and have someone call you back to confirm the appointment.",
+    };
+  }
+
+  // 3. Send notification
+  const timezone = schedule?.timezone || "America/New_York";
+  sendNotification(organizationId, phone, sanitizedName, startDate, timezone);
+  const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
+
+  return {
+    success: true,
+    message: `I've booked your appointment for ${dateStr} at ${timeStr}. Is there anything else I can help you with?`,
+    data: {
+      appointmentId: appointment.id,
+      startTime: startDate.toISOString(),
+      endTime: endDate.toISOString(),
+    },
+  };
+}
+
+// ─── Notification helper ────────────────────────────────────────────────────
+
+function sendNotification(
+  organizationId: string,
+  phone: string,
+  name: string,
+  appointmentDate: Date,
+  timezone?: string
+) {
+  sendAppointmentNotification({
+    organizationId,
+    callerPhone: phone,
+    callerName: name,
+    appointmentDate,
+    appointmentTime: appointmentDate.toLocaleTimeString("en-US", {
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
-    });
-
-    return {
-      success: true,
-      message: `Your appointment on ${dateStr} at ${timeStr} has been cancelled. Would you like to reschedule or is there anything else I can help with?`,
-    };
-  } catch (error: any) {
-    console.error("Cancel appointment error:", error.message);
-    return {
-      success: false,
-      message:
-        "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
-    };
-  }
+      ...(timezone && { timeZone: timezone }),
+    }),
+  }).catch((err) => {
+    console.error("Failed to send appointment notification:", err);
+  });
 }

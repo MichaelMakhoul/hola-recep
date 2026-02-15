@@ -105,8 +105,8 @@ export async function POST(request: Request) {
 
     const serverConfig = appUrl ? {
       url: `${appUrl}/api/webhooks/vapi`,
-      ...(webhookSecret && { secret: webhookSecret }),
       timeoutSeconds: 20,
+      ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
     } : undefined;
 
     // Build analysis plan from prompt config if available
@@ -140,17 +140,8 @@ export async function POST(request: Request) {
       }
     }
 
-    // Only include calendar tools if the org has a calendar integration
-    const { data: calIntegration } = await (supabase as any)
-      .from("calendar_integrations")
-      .select("id")
-      .eq("organization_id", membership.organization_id)
-      .eq("is_active", true)
-      .limit(1);
-
-    const hasCalendar = calIntegration && calIntegration.length > 0;
-
-    // Create assistant in Vapi
+    // Create assistant in Vapi — always include calendar tools so the AI
+    // can book appointments via built-in booking or Cal.com
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
       name: validatedData.name,
@@ -171,13 +162,11 @@ export async function POST(request: Request) {
       },
       server: serverConfig,
       recordingEnabled: true,
-      ...(hasCalendar && {
-        tools: [
-          calendarTools.checkAvailability,
-          calendarTools.bookAppointment,
-          calendarTools.cancelAppointment,
-        ],
-      }),
+      tools: [
+        calendarTools.checkAvailability,
+        calendarTools.bookAppointment,
+        calendarTools.cancelAppointment,
+      ],
       ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,

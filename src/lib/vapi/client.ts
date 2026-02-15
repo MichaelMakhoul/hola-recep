@@ -26,8 +26,6 @@ export interface VapiAssistant {
     model?: string;
     language?: string;
   };
-  serverUrl?: string;
-  serverUrlSecret?: string;
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   hipaaEnabled?: boolean;
@@ -86,9 +84,9 @@ export interface VapiCall {
 
 export interface ServerConfig {
   url: string;
-  secret?: string;
   timeoutSeconds?: number;
   headers?: Record<string, string>;
+  credentialId?: string;
 }
 
 export interface VapiAnalysisPlan {
@@ -138,8 +136,6 @@ export interface CreateAssistantRequest {
     language?: string;
   };
   server?: ServerConfig;
-  serverUrl?: string;
-  serverUrlSecret?: string;
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   analysisPlan?: VapiAnalysisPlan;
@@ -166,8 +162,7 @@ export interface UpdateAssistantRequest {
     model?: string;
     language?: string;
   };
-  serverUrl?: string;
-  serverUrlSecret?: string;
+  server?: ServerConfig;
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   analysisPlan?: VapiAnalysisPlan;
