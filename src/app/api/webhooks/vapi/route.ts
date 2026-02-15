@@ -10,6 +10,7 @@ import {
   handleCheckAvailability,
   handleCancelAppointment,
 } from "@/lib/calendar/tool-handlers";
+import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 
 // Verify Vapi webhook using custom header secret
 // Vapi sends the secret via the x-webhook-secret header (configured in server.headers)
@@ -494,6 +495,32 @@ export async function POST(request: Request) {
               voicemailTranscript: transcript ?? undefined,
             }).catch((err) => console.error("Failed to send voicemail notification:", err));
           }
+        }
+
+        // Fire-and-forget webhook delivery to user integrations
+        if (existingCall) {
+          // Look up assistant name for the payload
+          let assistantName: string | null = null;
+          if (existingCall.organization_id) {
+            const { data: assistantRecord } = await (supabase.from("assistants") as any)
+              .select("name")
+              .eq("vapi_assistant_id", call.assistantId)
+              .single();
+            if (assistantRecord) assistantName = assistantRecord.name;
+          }
+
+          deliverWebhooks(existingCall.organization_id, "call.completed", {
+            callId: existingCall.id,
+            caller: call.customer?.number || "Unknown",
+            callerName: callerName ?? undefined,
+            summary: summary ?? undefined,
+            transcript: transcript ?? undefined,
+            duration: durationSeconds ?? undefined,
+            assistantName,
+            outcome: callStatus,
+            recordingUrl: recordingUrl ?? undefined,
+            collectedData: collectedData as Record<string, unknown> | undefined,
+          }).catch((err) => console.error("Failed to deliver webhooks:", err));
         }
 
         break;
