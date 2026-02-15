@@ -134,16 +134,37 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
-      // Ensure standalone calendar tools exist and get their IDs
-      const toolIds = await ensureCalendarTools();
+      // Ensure standalone calendar tools exist and get their IDs (cached after first call)
+      let toolIds: string[];
+      try {
+        toolIds = await ensureCalendarTools();
+      } catch (toolError) {
+        console.error("Failed to provision calendar tools in Vapi:", toolError);
+        return NextResponse.json(
+          { error: "Failed to set up calendar tools. Please try again." },
+          { status: 502 }
+        );
+      }
 
-      // Inject org knowledge base into the system prompt for Vapi
-      const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
-      const promptConfig = validatedData.promptConfig !== undefined
-        ? validatedData.promptConfig
-        : currentAssistant.prompt_config;
+      // Always send model with toolIds; add messages when prompt/model changes
+      const hasPromptOrModelChanges =
+        validatedData.systemPrompt ||
+        validatedData.promptConfig !== undefined ||
+        validatedData.model ||
+        validatedData.modelProvider;
 
-      if (validatedData.systemPrompt || validatedData.promptConfig !== undefined || validatedData.model || validatedData.modelProvider) {
+      const modelPayload: Record<string, unknown> = {
+        provider: validatedData.modelProvider || currentAssistant.model_provider,
+        model: validatedData.model || currentAssistant.model,
+        toolIds,
+      };
+
+      if (hasPromptOrModelChanges) {
+        const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
+        const promptConfig = validatedData.promptConfig !== undefined
+          ? validatedData.promptConfig
+          : currentAssistant.prompt_config;
+
         const aggregatedKB = await getAggregatedKnowledgeBase(
           supabase,
           membership.organization_id
@@ -167,20 +188,13 @@ export async function PATCH(
           }
         }
 
-        vapiUpdate.model = {
-          provider: validatedData.modelProvider || currentAssistant.model_provider,
-          model: validatedData.model || currentAssistant.model,
-          messages: [{ role: "system", content: vapiSystemPrompt }],
-          toolIds,
-        };
+        modelPayload.messages = [{ role: "system", content: vapiSystemPrompt }];
       } else {
-        // Even if no prompt/model changes, always send toolIds with the model
-        vapiUpdate.model = {
-          provider: currentAssistant.model_provider,
-          model: currentAssistant.model,
-          toolIds,
-        };
+        // Preserve the existing system prompt so Vapi doesn't clear it
+        modelPayload.messages = [{ role: "system", content: currentAssistant.system_prompt }];
       }
+
+      vapiUpdate.model = modelPayload;
 
       if (validatedData.voiceId || validatedData.voiceProvider) {
         vapiUpdate.voice = {

@@ -116,11 +116,8 @@ export interface VapiTool {
   server?: ServerConfig;
 }
 
-export interface VapiStandaloneTool {
+export interface VapiStandaloneTool extends VapiTool {
   id: string;
-  type: "function";
-  function: VapiToolFunction;
-  server?: ServerConfig;
   orgId?: string;
   createdAt?: string;
   updatedAt?: string;

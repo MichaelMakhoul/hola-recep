@@ -139,8 +139,17 @@ export async function POST(request: Request) {
       }
     }
 
-    // Ensure standalone calendar tools exist in Vapi and get their IDs
-    const toolIds = await ensureCalendarTools();
+    // Ensure standalone calendar tools exist in Vapi and get their IDs (cached after first call)
+    let toolIds: string[];
+    try {
+      toolIds = await ensureCalendarTools();
+    } catch (toolError) {
+      console.error("Failed to provision calendar tools in Vapi:", toolError);
+      return NextResponse.json(
+        { error: "Failed to set up calendar tools. Please try again." },
+        { status: 502 }
+      );
+    }
 
     // Create assistant in Vapi — reference calendar tools by ID via model.toolIds
     const vapi = getVapiClient();
