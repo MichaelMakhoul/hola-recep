@@ -197,7 +197,7 @@ export async function DELETE(
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    if (!["owner", "admin"].includes(membership.role!)) {
+    if (!membership.role || !["owner", "admin"].includes(membership.role)) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
@@ -234,8 +234,8 @@ export async function DELETE(
         await vapi.deletePhoneNumber(phoneNumber.vapi_phone_number_id);
       } catch (e) {
         console.error("Failed to delete from Vapi:", e);
-        // Twilio already released — continue to delete DB record since Vapi
-        // numbers are free and will be cleaned up
+        // Twilio already released — Vapi deletion failure is non-critical
+        // since the paid Twilio resource is already freed
       }
     }
 

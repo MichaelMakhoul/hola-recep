@@ -85,7 +85,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    if (!["owner", "admin"].includes(membership.role!)) {
+    if (!membership.role || !["owner", "admin"].includes(membership.role)) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
@@ -152,8 +152,9 @@ export async function POST(request: Request) {
     let twilioSid: string | null = null;
 
     if (config.phoneProvider === "twilio") {
-      // ── Twilio flow: buy from Twilio, then import into Vapi ──
-      const { searchAvailableNumbers, purchaseNumber, releaseNumber, getTwilioAccountSid, getTwilioAuthToken } =
+      // ── Twilio flow: Vapi doesn't provision numbers in this country,
+      //    so buy from Twilio first, then import into Vapi for call handling ──
+      const { searchAvailableNumbers, purchaseNumber, releaseNumber, getTwilioCredentials } =
         await import("@/lib/twilio/client");
 
       // 1. Search Twilio for a number matching area code
@@ -172,10 +173,11 @@ export async function POST(request: Request) {
 
       // 3. Import into Vapi
       try {
+        const twilioCreds = getTwilioCredentials();
         const vapiResult = await vapi.importTwilioNumber({
           number: phoneNumber,
-          twilioAccountSid: getTwilioAccountSid(),
-          twilioAuthToken: getTwilioAuthToken(),
+          twilioAccountSid: twilioCreds.accountSid,
+          twilioAuthToken: twilioCreds.authToken,
           assistantId: vapiAssistantId,
           name: validatedData.friendlyName,
         });
@@ -209,7 +211,7 @@ export async function POST(request: Request) {
       ? validatedData.userPhoneNumber.replace(/\D/g, "")
       : null;
 
-    const friendlyName = validatedData.friendlyName
+    const resolvedFriendlyName = validatedData.friendlyName
       || (validatedData.sourceType === "forwarded" && cleanedUserPhone
         ? `Forwarding for ${formatPhoneForCountry(cleanedUserPhone, countryCode)}`
         : undefined);
@@ -220,7 +222,7 @@ export async function POST(request: Request) {
       phone_number: phoneNumber,
       vapi_phone_number_id: vapiPhoneNumberId,
       twilio_sid: twilioSid,
-      friendly_name: friendlyName,
+      friendly_name: resolvedFriendlyName,
       is_active: true,
       source_type: validatedData.sourceType,
     };

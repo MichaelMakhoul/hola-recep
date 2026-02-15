@@ -31,8 +31,8 @@ export async function searchAvailableNumbers(
 
   const searchParams: Record<string, unknown> = { limit };
   if (areaCode) {
-    // For AU, area codes are like "02" — Twilio expects the digit after 0
-    // Twilio uses `areaCode` for US and `contains` pattern for other countries
+    // Twilio does not support `areaCode` param for AU.
+    // We use `contains` as a prefix filter — passing the digit after trunk prefix "0".
     if (countryCode === "AU" && areaCode.startsWith("0")) {
       // Search by pattern: numbers starting with +61{digit}
       searchParams.contains = areaCode.replace(/^0/, "");
@@ -69,14 +69,12 @@ export async function releaseNumber(twilioSid: string): Promise<void> {
   await client.incomingPhoneNumbers(twilioSid).remove();
 }
 
-export function getTwilioAccountSid(): string {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  if (!sid) throw new Error("TWILIO_ACCOUNT_SID is required");
-  return sid;
-}
-
-export function getTwilioAuthToken(): string {
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  if (!token) throw new Error("TWILIO_AUTH_TOKEN is required");
-  return token;
+/** Returns Twilio credentials for Vapi import. Kept narrow to avoid broad token exposure. */
+export function getTwilioCredentials(): { accountSid: string; authToken: string } {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authToken) {
+    throw new Error("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are required");
+  }
+  return { accountSid, authToken };
 }

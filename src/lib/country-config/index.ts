@@ -64,7 +64,7 @@ export function getCountryConfig(code: CountryCode | string): CountryConfig {
   const normalized = (code || "").toUpperCase() as CountryCode;
   const config = COUNTRY_CONFIGS[normalized];
   if (!config) {
-    console.warn(`Unknown country code "${code}", falling back to US`);
+    console.error(`Unknown country code "${code}", falling back to US. This affects phone provisioning and billing.`);
     return COUNTRY_CONFIGS.US;
   }
   return config;
@@ -84,10 +84,6 @@ export function getCarriersForCountry(countryCode: CountryCode | string = "US"):
 
 export function getTimezonesForCountry(countryCode: CountryCode | string = "US"): TimezoneOption[] {
   return getCountryConfig(countryCode).timezones;
-}
-
-export function getCarrierById(id: string, countryCode: CountryCode | string = "US"): CarrierInfo | undefined {
-  return getCarriersForCountry(countryCode).find((c) => c.id === id);
 }
 
 export function formatInstructions(template: string, destinationNumber: string): string {

@@ -47,11 +47,11 @@ export const AU_CONFIG: CountryConfig = {
     },
     extractAreaCode(digits: string): string | null {
       const cleaned = digits.replace(/\D/g, "");
-      // National: 0X where X is the area code digit
+      // National format: extract 2-digit area code prefix (e.g., "02" for Sydney)
       if (cleaned.startsWith("0") && cleaned.length >= 2) {
         return cleaned.slice(0, 2);
       }
-      // International: 61X
+      // International: strip "61" and prepend trunk prefix "0" (e.g., +612... → "02")
       if (cleaned.startsWith("61") && cleaned.length >= 3) {
         return `0${cleaned.slice(2, 3)}`;
       }

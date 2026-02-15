@@ -1,13 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Check, Phone, Zap, Building2, Rocket } from "lucide-react";
+import { Check, Phone, Rocket } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
 
 interface GoLiveProps {
@@ -68,13 +66,21 @@ const plans = [
 
 export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
   const config = getCountryConfig(countryCode);
-  const { areaCodeLength, countryCallingCode, formatForDisplay } = config.phone;
+  const { areaCodeLength, countryCallingCode } = config.phone;
   const suggestedAreaCodes = config.suggestedAreaCodes;
 
-  // Build phone preview
-  const previewNumber = data.areaCode
-    ? `+${countryCallingCode} (${data.areaCode}) XXX-XXXX`
-    : `+${countryCallingCode} (${Array(areaCodeLength).fill("X").join("")}) XXX-XXXX`;
+  // Build phone preview using country-aware formatting
+  const buildPreview = () => {
+    const ac = data.areaCode || Array(areaCodeLength).fill("X").join("");
+    if (countryCode === "AU") {
+      // AU format: +61 X XXXX XXXX (area code is like "02", display digit is "2")
+      const displayAc = ac.startsWith("0") ? ac.slice(1) : ac;
+      return `+${countryCallingCode} ${displayAc} XXXX XXXX`;
+    }
+    // US format: +1 (XXX) XXX-XXXX
+    return `+${countryCallingCode} (${ac}) XXX-XXXX`;
+  };
+  const previewNumber = buildPreview();
 
   return (
     <div className="space-y-6">

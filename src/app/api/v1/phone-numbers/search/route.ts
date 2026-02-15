@@ -28,12 +28,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    const { data: org } = await (supabase as any)
+    const { data: org, error: orgError } = await (supabase as any)
       .from("organizations")
       .select("country")
       .eq("id", membership.organization_id)
       .single();
-    const countryCode = org?.country || "US";
+
+    if (orgError || !org) {
+      return NextResponse.json({ error: "Failed to load organization" }, { status: 500 });
+    }
+
+    const countryCode = org.country || "US";
 
     const config = getCountryConfig(countryCode);
     const body = await request.json();
@@ -53,7 +58,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // Vapi mock search for US
+    // Vapi has no search endpoint — returns placeholder; actual number provisioned at purchase
     const vapi = getVapiClient();
     const availableNumbers = await vapi.searchPhoneNumbers({
       areaCode,

@@ -44,12 +44,14 @@ export default async function PhoneNumbersPage() {
   // Get org's country
   let countryCode = "US";
   if (orgId) {
-    const { data: org } = await (supabase as any)
+    const { data: org, error: orgError } = await (supabase as any)
       .from("organizations")
       .select("country")
       .eq("id", orgId)
       .single();
-    countryCode = org?.country || "US";
+    if (!orgError && org?.country) {
+      countryCode = org.country;
+    }
   }
 
   // Get phone numbers

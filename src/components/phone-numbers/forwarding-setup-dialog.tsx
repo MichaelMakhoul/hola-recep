@@ -33,8 +33,7 @@ import {
 } from "lucide-react";
 import { formatPhoneNumber } from "@/lib/utils";
 import {
-  getCarrierById,
-  getCarriersForCountry,
+  getCountryConfig,
   validatePhoneForCountry,
   formatInstructions,
   type CarrierInfo,
@@ -71,7 +70,8 @@ export function ForwardingSetupDialog({
   open,
   onOpenChange,
 }: ForwardingSetupDialogProps) {
-  const countryCarriers = getCarriersForCountry(countryCode);
+  const config = getCountryConfig(countryCode);
+  const countryCarriers = config.carriers;
   const [step, setStep] = useState<Step>("enter_number");
   const [userPhone, setUserPhone] = useState("");
   const [carrierId, setCarrierId] = useState("");
@@ -86,11 +86,38 @@ export function ForwardingSetupDialog({
   const { toast } = useToast();
 
   const selectedCarrier = carrierId
-    ? countryCarriers.find((c) => c.id === carrierId) || getCarrierById(carrierId)
+    ? countryCarriers.find((c) => c.id === carrierId)
     : undefined;
 
   const cleanPhone = userPhone.replace(/\D/g, "");
   const isValidPhone = validatePhoneForCountry(cleanPhone, countryCode);
+
+  const stepContent: Record<Step, { title: string; description: string }> = {
+    enter_number: {
+      title: "Enter Your Phone Number",
+      description: "Enter the business phone number you want to forward to your AI assistant",
+    },
+    select_carrier: {
+      title: "Select Your Carrier",
+      description: "Select your phone carrier so we can show the correct dial codes",
+    },
+    assign_assistant: {
+      title: "Configure Forwarding",
+      description: "Optionally assign an assistant and give this number a name",
+    },
+    provisioning: {
+      title: "Setting Up Forwarding",
+      description: "Provisioning a destination number for your calls...",
+    },
+    instructions: {
+      title: "Forwarding Instructions",
+      description: "Follow these instructions to set up call forwarding on your phone",
+    },
+    confirm: {
+      title: "Confirm Setup",
+      description: "Have you completed the forwarding setup on your phone?",
+    },
+  };
 
   const resetForm = () => {
     setStep("enter_number");
@@ -124,8 +151,8 @@ export function ForwardingSetupDialog({
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to provision forwarding number");
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `Failed to provision forwarding number (HTTP ${response.status})`);
       }
 
       const result = await response.json();
@@ -142,9 +169,13 @@ export function ForwardingSetupDialog({
   };
 
   const handleCopy = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopiedText(text);
-    setTimeout(() => setCopiedText(null), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedText(text);
+      setTimeout(() => setCopiedText(null), 2000);
+    } catch {
+      toast({ variant: "destructive", title: "Copy failed", description: "Please copy the code manually." });
+    }
   };
 
   const handleConfirm = async (confirmed: boolean) => {
@@ -165,11 +196,11 @@ export function ForwardingSetupDialog({
           title: "Forwarding set up!",
           description: `Calls to ${formatPhoneNumber(userPhone, countryCode)} will be forwarded to your AI assistant.`,
         });
-      } catch {
+      } catch (err) {
         toast({
           variant: "destructive",
           title: "Error",
-          description: "Failed to update forwarding status",
+          description: err instanceof Error ? err.message : "Failed to update forwarding status",
         });
       } finally {
         setIsConfirming(false);
@@ -256,28 +287,8 @@ export function ForwardingSetupDialog({
     >
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>
-            {step === "enter_number" && "Enter Your Phone Number"}
-            {step === "select_carrier" && "Select Your Carrier"}
-            {step === "assign_assistant" && "Configure Forwarding"}
-            {step === "provisioning" && "Setting Up Forwarding"}
-            {step === "instructions" && "Forwarding Instructions"}
-            {step === "confirm" && "Confirm Setup"}
-          </DialogTitle>
-          <DialogDescription>
-            {step === "enter_number" &&
-              "Enter the business phone number you want to forward to your AI assistant"}
-            {step === "select_carrier" &&
-              "Select your phone carrier so we can show the correct dial codes"}
-            {step === "assign_assistant" &&
-              "Optionally assign an assistant and give this number a name"}
-            {step === "provisioning" &&
-              "Provisioning a destination number for your calls..."}
-            {step === "instructions" &&
-              "Follow these instructions to set up call forwarding on your phone"}
-            {step === "confirm" &&
-              "Have you completed the forwarding setup on your phone?"}
-          </DialogDescription>
+          <DialogTitle>{stepContent[step].title}</DialogTitle>
+          <DialogDescription>{stepContent[step].description}</DialogDescription>
         </DialogHeader>
 
         {/* Step: Enter Phone Number */}
@@ -287,7 +298,7 @@ export function ForwardingSetupDialog({
               <Label htmlFor="userPhone">Your Business Phone Number</Label>
               <Input
                 id="userPhone"
-                placeholder="(555) 123-4567"
+                placeholder={config.phone.placeholder}
                 value={userPhone}
                 onChange={(e) => setUserPhone(e.target.value)}
                 type="tel"
