@@ -125,7 +125,7 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateAssistantSchema.parse(body);
 
-    // Update in Vapi if there are voice/model changes
+    // Sync relevant changes to Vapi
     if (currentAssistant.vapi_assistant_id) {
       const vapi = getVapiClient();
       const vapiUpdate: Record<string, unknown> = {};
@@ -134,53 +134,60 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
-      // Ensure standalone calendar tools exist and get their IDs (cached after first call)
-      let toolIds: string[];
-      try {
-        toolIds = await ensureCalendarTools();
-      } catch (toolError) {
-        console.error("Failed to provision calendar tools in Vapi:", toolError);
-        return NextResponse.json(
-          { error: "Failed to set up calendar tools. Please try again." },
-          { status: 502 }
-        );
-      }
+      // Only rebuild model when prompt, model, or tool-related fields change
+      const needsModelUpdate =
+        validatedData.systemPrompt ||
+        validatedData.promptConfig !== undefined ||
+        validatedData.model ||
+        validatedData.modelProvider;
 
-      // Always build the full system prompt with KB injection so Vapi stays in sync
-      const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
-      const promptConfig = validatedData.promptConfig !== undefined
-        ? validatedData.promptConfig
-        : currentAssistant.prompt_config;
-
-      const aggregatedKB = await getAggregatedKnowledgeBase(
-        supabase,
-        membership.organization_id
-      );
-
-      let vapiSystemPrompt = rawPrompt;
-      if (promptConfig) {
-        const config = promptConfig as PromptConfig;
-        const settings = validatedData.settings || currentAssistant.settings || {};
-        const industry = settings.industry || "other";
-        vapiSystemPrompt = buildPromptFromConfig(config, {
-          businessName: validatedData.name || currentAssistant.name,
-          industry,
-          knowledgeBase: aggregatedKB || undefined,
-        });
-      } else if (aggregatedKB) {
-        if (rawPrompt.includes("{knowledge_base}")) {
-          vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
-        } else {
-          vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
+      if (needsModelUpdate) {
+        let toolIds: string[];
+        try {
+          toolIds = await ensureCalendarTools();
+        } catch (toolError) {
+          console.error("Failed to provision calendar tools in Vapi:", toolError);
+          return NextResponse.json(
+            { error: "Failed to set up calendar tools. Please try again." },
+            { status: 502 }
+          );
         }
-      }
 
-      vapiUpdate.model = {
-        provider: validatedData.modelProvider || currentAssistant.model_provider,
-        model: validatedData.model || currentAssistant.model,
-        messages: [{ role: "system", content: vapiSystemPrompt }],
-        toolIds,
-      };
+        const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
+        const promptConfig = validatedData.promptConfig !== undefined
+          ? validatedData.promptConfig
+          : currentAssistant.prompt_config;
+
+        const aggregatedKB = await getAggregatedKnowledgeBase(
+          supabase,
+          membership.organization_id
+        );
+
+        let vapiSystemPrompt = rawPrompt;
+        if (promptConfig) {
+          const config = promptConfig as PromptConfig;
+          const settings = validatedData.settings || currentAssistant.settings || {};
+          const industry = settings.industry || "other";
+          vapiSystemPrompt = buildPromptFromConfig(config, {
+            businessName: validatedData.name || currentAssistant.name,
+            industry,
+            knowledgeBase: aggregatedKB || undefined,
+          });
+        } else if (aggregatedKB) {
+          if (rawPrompt.includes("{knowledge_base}")) {
+            vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
+          } else {
+            vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
+          }
+        }
+
+        vapiUpdate.model = {
+          provider: validatedData.modelProvider || currentAssistant.model_provider,
+          model: validatedData.model || currentAssistant.model,
+          messages: [{ role: "system", content: vapiSystemPrompt }],
+          toolIds,
+        };
+      }
 
       if (validatedData.voiceId || validatedData.voiceProvider) {
         vapiUpdate.voice = {
@@ -192,7 +199,7 @@ export async function PATCH(
         vapiUpdate.firstMessage = validatedData.firstMessage;
       }
 
-      // Always ensure server URL is set
+      // Attach webhook server config if APP_URL is configured
       const serverConfig = buildVapiServerConfig();
       if (serverConfig) {
         vapiUpdate.server = serverConfig;

@@ -422,6 +422,7 @@ export function getVapiClient(): VapiClient {
   return vapiClient;
 }
 
+/** Builds the Vapi webhook server config. Returns undefined if NEXT_PUBLIC_APP_URL is not set. */
 export function buildVapiServerConfig(): ServerConfig | undefined {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
   const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;

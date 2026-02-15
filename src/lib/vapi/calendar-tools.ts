@@ -2,8 +2,11 @@
  * Ensures all calendar tools exist as standalone resources in Vapi.
  * On first call: lists all account tools, matches calendar tools by function name,
  * and creates any that are missing. Caches IDs in memory for the lifetime of the
- * process — tools are account-wide, same for all assistants. If tools are deleted
- * externally, a server restart is required to re-create them.
+ * process — tools are account-wide, same for all assistants.
+ *
+ * Note: only verifies tools exist by function name — does not detect external
+ * modifications to tool definitions. If tools are deleted or modified externally,
+ * a server restart is required.
  */
 
 import { getVapiClient, buildVapiServerConfig } from "./client";
@@ -16,18 +19,13 @@ export async function ensureCalendarTools(): Promise<string[]> {
   if (cachedToolIds) return cachedToolIds;
 
   // Promise-based lock prevents concurrent requests from creating duplicate tools
-  if (pendingInit) return pendingInit;
-
-  pendingInit = resolveCalendarTools().catch((err) => {
-    pendingInit = null; // Allow retry on failure
-    throw err;
-  });
-
-  try {
-    return await pendingInit;
-  } finally {
-    pendingInit = null;
+  if (!pendingInit) {
+    pendingInit = resolveCalendarTools().finally(() => {
+      pendingInit = null;
+    });
   }
+
+  return pendingInit;
 }
 
 async function resolveCalendarTools(): Promise<string[]> {
