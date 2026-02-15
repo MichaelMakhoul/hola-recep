@@ -283,7 +283,7 @@ function BillingContent() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-2xl font-bold capitalize">
-                  {subscription.plan.replace("_", " ")}
+                  {subscription.plan?.replace("_", " ") ?? "Free"}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   Renews{" "}

@@ -11,9 +11,9 @@ import {
   CalendarDays,
   Settings,
   CreditCard,
+  BookOpen,
   Users,
   Key,
-  BookOpen,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -31,7 +31,7 @@ interface DashboardSidebarProps {
   currentOrgId?: string;
 }
 
-const navigation = [
+export const navigation = [
   {
     name: "Dashboard",
     href: "/dashboard",
@@ -59,7 +59,12 @@ const navigation = [
   },
 ];
 
-const secondaryNavigation = [
+export const secondaryNavigation = [
+  {
+    name: "Knowledge Base",
+    href: "/settings/knowledge",
+    icon: BookOpen,
+  },
   {
     name: "Team",
     href: "/settings/team",
@@ -69,11 +74,6 @@ const secondaryNavigation = [
     name: "API Keys",
     href: "/settings/api-keys",
     icon: Key,
-  },
-  {
-    name: "Knowledge Base",
-    href: "/settings/knowledge",
-    icon: BookOpen,
   },
   {
     name: "Billing",
@@ -87,15 +87,36 @@ const secondaryNavigation = [
   },
 ];
 
-export function DashboardSidebar({
-  organizations,
-  currentOrgId,
-}: DashboardSidebarProps) {
-  const pathname = usePathname();
-  const currentOrg = organizations.find((o) => o.id === currentOrgId);
+function NavLink({ item, pathname }: { item: typeof navigation[number]; pathname: string }) {
+  const isActive =
+    item.href === "/settings"
+      ? pathname === "/settings" ||
+        pathname === "/settings/profile" ||
+        pathname === "/settings/notifications" ||
+        pathname === "/settings/calendar"
+      : pathname === item.href || pathname.startsWith(`${item.href}/`);
 
   return (
-    <div className="flex h-full w-64 flex-col border-r bg-card">
+    <Link
+      href={item.href}
+      className={cn(
+        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        isActive
+          ? "bg-primary text-primary-foreground"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+      )}
+    >
+      <item.icon className="h-5 w-5" />
+      {item.name}
+    </Link>
+  );
+}
+
+export function SidebarContent({ currentOrg }: { currentOrg?: { name: string; type: string } }) {
+  const pathname = usePathname();
+
+  return (
+    <>
       {/* Logo */}
       <div className="flex h-16 items-center border-b px-6">
         <Link href="/dashboard" className="flex items-center gap-2">
@@ -126,47 +147,17 @@ export function DashboardSidebar({
       {/* Navigation */}
       <ScrollArea className="flex-1 px-3 py-4">
         <nav className="space-y-1">
-          {navigation.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-            return (
-              <Link
-                key={item.name}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <item.icon className="h-5 w-5" />
-                {item.name}
-              </Link>
-            );
-          })}
+          {navigation.map((item) => (
+            <NavLink key={item.name} item={item} pathname={pathname} />
+          ))}
         </nav>
 
         <div className="my-4 border-t" />
 
         <nav className="space-y-1">
-          {secondaryNavigation.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-            return (
-              <Link
-                key={item.name}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <item.icon className="h-5 w-5" />
-                {item.name}
-              </Link>
-            );
-          })}
+          {secondaryNavigation.map((item) => (
+            <NavLink key={item.name} item={item} pathname={pathname} />
+          ))}
         </nav>
       </ScrollArea>
 
@@ -179,6 +170,19 @@ export function DashboardSidebar({
           </p>
         </div>
       </div>
+    </>
+  );
+}
+
+export function DashboardSidebar({
+  organizations,
+  currentOrgId,
+}: DashboardSidebarProps) {
+  const currentOrg = organizations.find((o) => o.id === currentOrgId);
+
+  return (
+    <div className="hidden md:flex h-full w-64 flex-col border-r bg-card">
+      <SidebarContent currentOrg={currentOrg ? { name: currentOrg.name, type: currentOrg.type } : undefined} />
     </div>
   );
 }
