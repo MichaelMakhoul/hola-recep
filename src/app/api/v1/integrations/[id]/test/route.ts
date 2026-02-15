@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeDecrypt } from "@/lib/security/encryption";
 import { isUrlAllowed, isValidUUID } from "@/lib/security/validation";
 import { signPayload } from "@/lib/integrations/webhook-delivery";
-
-interface Membership {
-  organization_id: string;
-}
+import type { OrgMembership } from "@/lib/integrations/types";
 
 function buildSamplePayload() {
   return {
@@ -49,12 +47,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const { data: membership } = (await supabase
       .from("org_members")
-      .select("organization_id")
+      .select("organization_id, role")
       .eq("user_id", user.id)
-      .single()) as { data: Membership | null };
+      .single()) as { data: OrgMembership | null };
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
+    }
+
+    if (!["owner", "admin"].includes(membership.role || "")) {
+      return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
     const { data: integration, error } = await (supabase.from("integrations") as any)
@@ -107,8 +109,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       clearTimeout(timeout);
       const responseBody = await response.text().catch((err: Error) => `[Failed to read response: ${err.message}]`);
 
-      // Log the test delivery
-      await (supabase.from("integration_logs") as any).insert({
+      // Log the test delivery (use admin client to bypass RLS on integration_logs)
+      const adminClient = createAdminClient();
+      await (adminClient as any).from("integration_logs").insert({
         integration_id: id,
         event_type: "test",
         payload: samplePayload,
@@ -133,8 +136,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
             ? fetchError.message
             : "Network error";
 
-      // Log the failed test
-      await (supabase.from("integration_logs") as any).insert({
+      // Log the failed test (use admin client to bypass RLS on integration_logs)
+      const adminClient = createAdminClient();
+      await (adminClient as any).from("integration_logs").insert({
         integration_id: id,
         event_type: "test",
         payload: samplePayload,

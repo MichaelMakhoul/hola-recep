@@ -4,11 +4,7 @@ import { z } from "zod";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
 import { isUrlAllowed, isValidUUID } from "@/lib/security/validation";
-
-interface Membership {
-  organization_id: string;
-  role?: string;
-}
+import type { OrgMembership } from "@/lib/integrations/types";
 
 const updateIntegrationSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -26,7 +22,7 @@ async function getOrgMembership(supabase: Awaited<ReturnType<typeof createClient
     .from("org_members")
     .select("organization_id, role")
     .eq("user_id", userId)
-    .single()) as { data: Membership | null };
+    .single()) as { data: OrgMembership | null };
   return data;
 }
 

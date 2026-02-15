@@ -3,11 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
 import { retryFailedWebhook } from "@/lib/integrations/retry";
-
-interface Membership {
-  organization_id: string;
-  role?: string;
-}
+import type { OrgMembership } from "@/lib/integrations/types";
 
 // POST /api/v1/integrations/[id]/retry — retry a failed log entry
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -33,7 +29,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       .from("org_members")
       .select("organization_id, role")
       .eq("user_id", user.id)
-      .single()) as { data: Membership | null };
+      .single()) as { data: OrgMembership | null };
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });

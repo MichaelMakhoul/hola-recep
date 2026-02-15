@@ -5,11 +5,7 @@ import crypto from "crypto";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { safeEncrypt, safeDecrypt } from "@/lib/security/encryption";
 import { isUrlAllowed } from "@/lib/security/validation";
-
-interface Membership {
-  organization_id: string;
-  role?: string;
-}
+import type { OrgMembership } from "@/lib/integrations/types";
 
 const createIntegrationSchema = z.object({
   name: z.string().min(1).max(100),
@@ -43,7 +39,7 @@ export async function GET(request: Request) {
       .from("org_members")
       .select("organization_id")
       .eq("user_id", user.id)
-      .single()) as { data: Membership | null };
+      .single()) as { data: OrgMembership | null };
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
@@ -105,7 +101,7 @@ export async function POST(request: Request) {
       .from("org_members")
       .select("organization_id, role")
       .eq("user_id", user.id)
-      .single()) as { data: Membership | null };
+      .single()) as { data: OrgMembership | null };
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });

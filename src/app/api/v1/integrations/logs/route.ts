@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { withRateLimit } from "@/lib/security/rate-limiter";
-
-interface Membership {
-  organization_id: string;
-}
+import type { OrgMembership } from "@/lib/integrations/types";
 
 // GET /api/v1/integrations/logs — all logs across all integrations for the org
 export async function GET(request: Request) {
@@ -24,7 +21,7 @@ export async function GET(request: Request) {
       .from("org_members")
       .select("organization_id")
       .eq("user_id", user.id)
-      .single()) as { data: Membership | null };
+      .single()) as { data: OrgMembership | null };
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });

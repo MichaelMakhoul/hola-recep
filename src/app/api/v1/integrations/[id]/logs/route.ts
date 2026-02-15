@@ -2,10 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
-
-interface Membership {
-  organization_id: string;
-}
+import type { OrgMembership } from "@/lib/integrations/types";
 
 // GET /api/v1/integrations/[id]/logs
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -30,7 +27,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       .from("org_members")
       .select("organization_id")
       .eq("user_id", user.id)
-      .single()) as { data: Membership | null };
+      .single()) as { data: OrgMembership | null };
 
     if (!membership) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });

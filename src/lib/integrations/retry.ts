@@ -4,6 +4,7 @@ import { isUrlAllowed } from "@/lib/security/validation";
 import { signPayload } from "./webhook-delivery";
 
 const DELIVERY_TIMEOUT_MS = 5000;
+const MAX_RETRIES = 5;
 
 export async function retryFailedWebhook(logId: string, integrationId: string): Promise<{
   success: boolean;
@@ -23,6 +24,10 @@ export async function retryFailedWebhook(logId: string, integrationId: string): 
 
   if (logError || !log) {
     return { success: false, error: "Log entry not found or already successful" };
+  }
+
+  if (log.retry_count >= MAX_RETRIES) {
+    return { success: false, error: `Maximum retries (${MAX_RETRIES}) exceeded` };
   }
 
   // Get the integration details

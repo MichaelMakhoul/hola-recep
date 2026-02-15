@@ -1,3 +1,8 @@
+export interface OrgMembership {
+  organization_id: string;
+  role?: string;
+}
+
 export interface Integration {
   id: string;
   organization_id: string;

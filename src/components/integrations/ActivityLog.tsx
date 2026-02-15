@@ -136,7 +136,7 @@ export function ActivityLog() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      {log.response_status ? (
+                      {log.response_status !== null ? (
                         <Badge
                           variant={log.response_status < 400 ? "success" : "destructive"}
                           className="text-xs"

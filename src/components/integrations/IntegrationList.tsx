@@ -17,6 +17,14 @@ import {
   XCircle,
   Webhook,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { PlatformIcon } from "./PlatformIcon";
 import { IntegrationForm } from "./IntegrationForm";
 import { format } from "date-fns";
@@ -47,6 +55,7 @@ export function IntegrationList() {
   const [expandedLogs, setExpandedLogs] = useState<string | null>(null);
   const [logs, setLogs] = useState<Record<string, LogEntry[]>>({});
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Integration | null>(null);
   const { toast } = useToast();
 
   const loadIntegrations = useCallback(async () => {
@@ -228,7 +237,7 @@ export function IntegrationList() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => handleDelete(integration.id)}
+                      onClick={() => setDeleteTarget(integration)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
@@ -259,7 +268,7 @@ export function IntegrationList() {
                               </span>
                             </div>
                             <div className="flex items-center gap-2">
-                              {log.response_status && (
+                              {log.response_status !== null && (
                                 <Badge variant="outline" className="text-xs">
                                   {log.response_status}
                                 </Badge>
@@ -281,6 +290,35 @@ export function IntegrationList() {
           ))}
         </div>
       )}
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Integration</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete &ldquo;{deleteTarget?.name}&rdquo;? This will also
+              remove all delivery logs. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (deleteTarget) {
+                  handleDelete(deleteTarget.id);
+                  setDeleteTarget(null);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <IntegrationForm
         open={showForm}

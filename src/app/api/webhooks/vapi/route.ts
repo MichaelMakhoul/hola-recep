@@ -272,6 +272,13 @@ export async function POST(request: Request) {
               });
             }
           }
+
+          // Fire call.started webhook
+          deliverWebhooks(phoneNumber.organization_id, "call.started", {
+            callId: existingCall?.id || call.id,
+            caller: call.customer?.number || "Unknown",
+            outcome: "in-progress",
+          }).catch((err) => console.error("[Webhooks] Failed to deliver call.started:", err));
         } else {
           // Other status updates (queued, ringing, forwarding, ended)
           const { error: statusError } = await (supabase
