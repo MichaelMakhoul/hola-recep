@@ -187,7 +187,8 @@ export function AssistantBuilder({
       });
 
       if (!response.ok) {
-        throw new Error("Failed to save assistant");
+        const errorBody = await response.json().catch(() => null);
+        throw new Error(errorBody?.error || "Failed to save assistant");
       }
 
       toast({
@@ -196,11 +197,11 @@ export function AssistantBuilder({
       });
 
       router.refresh();
-    } catch {
+    } catch (error) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to save assistant settings.",
+        description: error instanceof Error ? error.message : "Failed to save assistant settings.",
       });
     } finally {
       setIsSaving(false);
@@ -649,7 +650,7 @@ export function AssistantBuilder({
                 {recordingEnabled && (
                   <div className="space-y-2">
                     <Label htmlFor="recordingDisclosure">
-                      Recording &amp; AI Disclosure
+                      Recording & AI Disclosure
                     </Label>
                     <Textarea
                       id="recordingDisclosure"
@@ -663,7 +664,7 @@ export function AssistantBuilder({
                       <code className="bg-muted px-1 rounded">
                         {"{business_name}"}
                       </code>{" "}
-                      to insert your assistant&apos;s name. Callers who decline
+                      to insert your business name. Callers who decline
                       recording will be offered a transfer to a team member.
                     </p>
                   </div>

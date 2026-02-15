@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
-import { DEFAULT_RECORDING_DISCLOSURE, RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure } from "@/lib/templates";
+import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -127,6 +127,13 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateAssistantSchema.parse(body);
 
+    // Merge incoming settings with existing to preserve fields like industry
+    const mergedSettings = {
+      ...(currentAssistant.settings || {}),
+      ...(validatedData.settings || {}),
+    };
+    const { recordingEnabled, recordingDisclosure } = resolveRecordingSettings(mergedSettings);
+
     // Sync relevant changes to Vapi
     if (currentAssistant.vapi_assistant_id) {
       const vapi = getVapiClient();
@@ -135,16 +142,6 @@ export async function PATCH(
       if (validatedData.name) {
         vapiUpdate.name = validatedData.name;
       }
-
-      // Resolve recording settings (merge incoming with existing)
-      const mergedSettings = {
-        ...(currentAssistant.settings || {}),
-        ...(validatedData.settings || {}),
-      };
-      const recordingEnabled = mergedSettings.recordingEnabled ?? true;
-      const recordingDisclosure = recordingEnabled
-        ? (mergedSettings.recordingDisclosure ?? DEFAULT_RECORDING_DISCLOSURE)
-        : null;
 
       // Only rebuild model when prompt, model, settings, or tool-related fields change
       const needsModelUpdate =
@@ -269,7 +266,7 @@ export async function PATCH(
     if (validatedData.tools !== undefined) updateData.tools = validatedData.tools;
     if (validatedData.isActive !== undefined) updateData.is_active = validatedData.isActive;
     if (validatedData.promptConfig !== undefined) updateData.prompt_config = validatedData.promptConfig;
-    if (validatedData.settings !== undefined) updateData.settings = validatedData.settings;
+    if (validatedData.settings !== undefined) updateData.settings = mergedSettings;
 
     const { data: assistant, error } = await (supabase
       .from("assistants") as any)

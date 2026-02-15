@@ -109,7 +109,7 @@ export default function NewAssistantPage() {
 
       if (!vapiResponse.ok) {
         const error = await vapiResponse.json();
-        throw new Error(error.message || "Failed to create assistant");
+        throw new Error(error.error || error.message || "Failed to create assistant");
       }
 
       const assistant = await vapiResponse.json();
@@ -275,7 +275,7 @@ export default function NewAssistantPage() {
             {recordingEnabled && (
               <div className="space-y-2">
                 <Label htmlFor="recordingDisclosure">
-                  Recording &amp; AI Disclosure
+                  Recording & AI Disclosure
                 </Label>
                 <Textarea
                   id="recordingDisclosure"
@@ -289,7 +289,7 @@ export default function NewAssistantPage() {
                   <code className="bg-muted px-1 rounded">
                     {"{business_name}"}
                   </code>{" "}
-                  to insert your assistant&apos;s name. Callers who decline
+                  to insert your business name. Callers who decline
                   recording will be offered a transfer to a team member.
                 </p>
               </div>

@@ -89,13 +89,24 @@ export const DEFAULT_RECORDING_DISCLOSURE =
 export const RECORDING_DECLINE_SYSTEM_INSTRUCTION =
   'IMPORTANT: If the caller says they do not want to be recorded or do not consent to recording, politely acknowledge their preference and offer to transfer them to a team member using the transfer_call tool. Do not pressure them to stay on the line.';
 
+export function resolveRecordingSettings(settings: Record<string, any> | undefined): {
+  recordingEnabled: boolean;
+  recordingDisclosure: string | null;
+} {
+  const recordingEnabled = settings?.recordingEnabled ?? true;
+  const recordingDisclosure = recordingEnabled
+    ? (settings?.recordingDisclosure?.trim() || DEFAULT_RECORDING_DISCLOSURE)
+    : null;
+  return { recordingEnabled, recordingDisclosure };
+}
+
 export function buildFirstMessageWithDisclosure(
   firstMessage: string,
   disclosure: string | null | undefined,
   businessName: string
 ): string {
   if (!disclosure) return firstMessage;
-  const populated = disclosure.replace(/{business_name}/g, businessName);
+  const populated = disclosure.replace(/{business_name}/g, businessName || 'our office');
   return `${populated} ${firstMessage}`;
 }
 

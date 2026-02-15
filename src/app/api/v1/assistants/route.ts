@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
-import { DEFAULT_RECORDING_DISCLOSURE, RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure } from "@/lib/templates";
+import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -146,10 +146,7 @@ export async function POST(request: Request) {
     }
 
     // Resolve recording settings (default: on with standard disclosure)
-    const recordingEnabled = validatedData.settings?.recordingEnabled ?? true;
-    const recordingDisclosure = recordingEnabled
-      ? (validatedData.settings?.recordingDisclosure ?? DEFAULT_RECORDING_DISCLOSURE)
-      : null;
+    const { recordingEnabled, recordingDisclosure } = resolveRecordingSettings(validatedData.settings);
 
     // Combine disclosure + greeting for Vapi's firstMessage
     const vapiFirstMessage = buildFirstMessageWithDisclosure(
