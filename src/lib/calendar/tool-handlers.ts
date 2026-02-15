@@ -23,46 +23,130 @@ interface BusinessHours {
   close: string; // "17:00"
 }
 
+interface OrgSchedule {
+  timezone: string;
+  businessHours: Record<string, BusinessHours | null>;
+}
+
 const SLOT_DURATION_MINUTES = 30;
 
-/**
- * Compute available 30-minute slots for a given date using the org's
- * business hours minus any existing (non-cancelled) appointments.
- */
-async function getBuiltInAvailability(
-  organizationId: string,
-  date: string
-): Promise<string[]> {
-  const supabase = createAdminClient();
+// ─── Shared helpers ─────────────────────────────────────────────────────────
 
-  // 1. Get business hours + timezone
-  const { data: org } = await (supabase as any)
+/**
+ * Fetch org business hours and timezone. Throws on DB error so callers
+ * can surface a user-friendly message instead of silently skipping validation.
+ */
+async function getOrgSchedule(
+  organizationId: string
+): Promise<OrgSchedule | null> {
+  const supabase = createAdminClient();
+  const { data: org, error } = await (supabase as any)
     .from("organizations")
     .select("business_hours, timezone")
     .eq("id", organizationId)
     .single();
 
-  if (!org || !org.business_hours) return [];
+  if (error) {
+    console.error("Failed to fetch org schedule:", { organizationId, error });
+    throw new Error(`Failed to fetch org schedule: ${error.message}`);
+  }
 
-  const timezone: string = org.timezone || "America/New_York";
+  if (!org || !org.business_hours) return null;
 
-  // 2. Determine the day name for the requested date in the org's timezone
-  const requestedDate = new Date(`${date}T12:00:00`); // noon to avoid DST edge
-  const dayName = requestedDate
-    .toLocaleDateString("en-US", { weekday: "long", timeZone: timezone })
+  return {
+    timezone: org.timezone || "America/New_York",
+    businessHours: org.business_hours,
+  };
+}
+
+/**
+ * Get the business hours for a specific date, resolving the day name
+ * in the org's timezone. Returns null if closed that day.
+ */
+function getHoursForDate(
+  schedule: OrgSchedule,
+  date: string
+): { open: number; close: number } | null {
+  // Use noon to avoid DST-transition ambiguity at midnight boundaries
+  const dateObj = new Date(`${date}T12:00:00`);
+  const dayName = dateObj
+    .toLocaleDateString("en-US", { weekday: "long", timeZone: schedule.timezone })
     .toLowerCase();
 
-  const hours: BusinessHours | null = org.business_hours[dayName];
-  if (!hours || !hours.open || !hours.close) return []; // Closed
+  const hours: BusinessHours | null = schedule.businessHours[dayName];
+  if (!hours || !hours.open || !hours.close) return null;
 
-  // 3. Generate slot start times
   const [openH, openM] = hours.open.split(":").map(Number);
   const [closeH, closeM] = hours.close.split(":").map(Number);
-  const openMinutes = openH * 60 + openM;
-  const closeMinutes = closeH * 60 + closeM;
+  return { open: openH * 60 + openM, close: closeH * 60 + closeM };
+}
 
+/**
+ * Extract the hour and minute of a Date in a specific timezone.
+ */
+function getTimeInTimezone(d: Date, timezone: string): { h: number; m: number } {
+  const timeStr = d.toLocaleTimeString("en-US", {
+    timeZone: timezone,
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const [h, m] = timeStr.split(":").map(Number);
+  return { h, m };
+}
+
+/**
+ * Format a Date as "Monday, March 15" and "2:00 PM" in a given timezone.
+ */
+function formatDateTimeForVoice(
+  d: Date,
+  timezone: string
+): { dateStr: string; timeStr: string } {
+  return {
+    dateStr: d.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      timeZone: timezone,
+    }),
+    timeStr: d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: timezone,
+    }),
+  };
+}
+
+function formatTime(h: number, m: number): string {
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 || 12;
+  const mins = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
+  return `${hour12}${mins} ${period}`;
+}
+
+// ─── Built-in availability ──────────────────────────────────────────────────
+
+/**
+ * Compute available 30-minute slots for a given date using the org's
+ * business hours minus any existing (non-cancelled) appointments.
+ *
+ * @returns ISO-like datetime strings in the org's local time (no TZ offset),
+ *          e.g., "2025-03-15T09:00:00". Throws on DB errors.
+ */
+async function getBuiltInAvailability(
+  organizationId: string,
+  date: string
+): Promise<string[]> {
+  const schedule = await getOrgSchedule(organizationId);
+  if (!schedule) return [];
+
+  const hours = getHoursForDate(schedule, date);
+  if (!hours) return []; // Closed
+
+  // Generate slot start times in org-local time
   const slots: string[] = [];
-  for (let m = openMinutes; m + SLOT_DURATION_MINUTES <= closeMinutes; m += SLOT_DURATION_MINUTES) {
+  for (let m = hours.open; m + SLOT_DURATION_MINUTES <= hours.close; m += SLOT_DURATION_MINUTES) {
     const hh = String(Math.floor(m / 60)).padStart(2, "0");
     const mm = String(m % 60).padStart(2, "0");
     slots.push(`${date}T${hh}:${mm}:00`);
@@ -70,11 +154,12 @@ async function getBuiltInAvailability(
 
   if (slots.length === 0) return [];
 
-  // 4. Get existing appointments for this date that are not cancelled
+  // Get existing appointments for this date
+  const supabase = createAdminClient();
   const dayStart = `${date}T00:00:00`;
   const dayEnd = `${date}T23:59:59`;
 
-  const { data: existing } = await (supabase as any)
+  const { data: existing, error: apptError } = await (supabase as any)
     .from("appointments")
     .select("start_time, duration_minutes, end_time")
     .eq("organization_id", organizationId)
@@ -82,13 +167,18 @@ async function getBuiltInAvailability(
     .lte("start_time", dayEnd)
     .in("status", ["confirmed", "pending"]);
 
+  if (apptError) {
+    console.error("Failed to fetch existing appointments:", { organizationId, date, error: apptError });
+    throw new Error(`Failed to fetch appointments: ${apptError.message}`);
+  }
+
   const appointments = (existing || []) as {
     start_time: string;
     duration_minutes: number | null;
     end_time: string | null;
   }[];
 
-  // 5. Filter out slots that overlap with existing appointments
+  // Filter out slots that overlap with existing appointments
   return slots.filter((slotIso) => {
     const slotStart = new Date(slotIso).getTime();
     const slotEnd = slotStart + SLOT_DURATION_MINUTES * 60_000;
@@ -98,7 +188,6 @@ async function getBuiltInAvailability(
       const apptEnd = appt.end_time
         ? new Date(appt.end_time).getTime()
         : apptStart + (appt.duration_minutes || SLOT_DURATION_MINUTES) * 60_000;
-      // Overlap: slotStart < apptEnd AND slotEnd > apptStart
       return slotStart < apptEnd && slotEnd > apptStart;
     });
   });
@@ -109,7 +198,8 @@ async function getBuiltInAvailability(
  */
 function formatBuiltInAvailabilityForVoice(
   date: string,
-  slots: string[]
+  slots: string[],
+  timezone: string
 ): string {
   if (slots.length === 0) {
     return "I'm sorry, there are no available appointments on that date. Would you like to check a different day?";
@@ -120,6 +210,7 @@ function formatBuiltInAvailabilityForVoice(
     weekday: "long",
     month: "long",
     day: "numeric",
+    timeZone: timezone,
   });
 
   const slotsToShow = slots.slice(0, 5);
@@ -129,6 +220,7 @@ function formatBuiltInAvailabilityForVoice(
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
+      timeZone: timezone,
     });
   });
 
@@ -208,7 +300,8 @@ export async function handleBookAppointment(
     );
   }
 
-  // ── Built-in booking ──────────────────────────────────────────────────
+  // ── Built-in booking (no Cal.com configured) ──────────────────────────
+  console.log("Using built-in booking (no Cal.com client):", { organizationId });
   return bookInternal(
     organizationId,
     datetime,
@@ -239,15 +332,18 @@ export async function handleCheckAvailability(
     return checkAvailabilityViaCal(calClient, organizationId, date);
   }
 
-  // ── Built-in availability ─────────────────────────────────────────────
+  // ── Built-in availability (no Cal.com configured) ─────────────────────
+  console.log("Using built-in availability (no Cal.com client):", { organizationId });
   try {
+    const schedule = await getOrgSchedule(organizationId);
+    const timezone = schedule?.timezone || "America/New_York";
     const slots = await getBuiltInAvailability(organizationId, date);
     return {
       success: true,
-      message: formatBuiltInAvailabilityForVoice(date, slots),
+      message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
     };
   } catch (error: any) {
-    console.error("Built-in availability error:", error.message);
+    console.error("Built-in availability error:", { organizationId, date, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
@@ -272,7 +368,7 @@ export async function handleCancelAppointment(
 
   const supabase = createAdminClient();
 
-  const { data: appointments } = await (supabase as any)
+  const { data: appointments, error: queryError } = await (supabase as any)
     .from("appointments")
     .select("*")
     .eq("organization_id", organizationId)
@@ -280,6 +376,15 @@ export async function handleCancelAppointment(
     .in("status", ["confirmed", "pending"])
     .order("start_time", { ascending: true })
     .limit(1);
+
+  if (queryError) {
+    console.error("Failed to query appointments for cancellation:", { organizationId, phone, error: queryError });
+    return {
+      success: false,
+      message:
+        "I'm having trouble looking up your appointment right now. Would you like me to have someone call you back?",
+    };
+  }
 
   const appointment = appointments?.[0] ?? null;
 
@@ -299,6 +404,14 @@ export async function handleCancelAppointment(
           appointment.metadata.calComBookingId,
           reason || "Cancelled by caller"
         );
+      } else if (appointment.external_id) {
+        console.warn("Cannot cancel Cal.com booking: missing client or booking ID", {
+          organizationId,
+          appointmentId: appointment.id,
+          externalId: appointment.external_id,
+          hasCalClient: !!calClient,
+          hasBookingId: !!appointment.metadata?.calComBookingId,
+        });
       }
     }
 
@@ -309,26 +422,26 @@ export async function handleCancelAppointment(
 
     if (cancelDbError) {
       console.error("Failed to update appointment status locally:", cancelDbError);
+      return {
+        success: false,
+        message:
+          "I'm having trouble cancelling the appointment right now. Would you like me to have someone call you back to help with this?",
+      };
     }
 
-    const startDate = new Date(appointment.start_time);
-    const dateStr = startDate.toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-    });
-    const timeStr = startDate.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
+    const schedule = await getOrgSchedule(organizationId).catch(() => null);
+    const timezone = schedule?.timezone || "America/New_York";
+    const { dateStr, timeStr } = formatDateTimeForVoice(
+      new Date(appointment.start_time),
+      timezone
+    );
 
     return {
       success: true,
       message: `Your appointment on ${dateStr} at ${timeStr} has been cancelled. Would you like to reschedule or is there anything else I can help with?`,
     };
   } catch (error: any) {
-    console.error("Cancel appointment error:", error.message);
+    console.error("Cancel appointment error:", { organizationId, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
@@ -428,19 +541,7 @@ async function bookViaCal(
 
     // Send notification
     const appointmentDate = new Date(datetime);
-    await sendAppointmentNotification({
-      organizationId,
-      callerPhone: phone,
-      callerName: sanitizedName,
-      appointmentDate,
-      appointmentTime: appointmentDate.toLocaleTimeString("en-US", {
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      }),
-    }).catch((err) => {
-      console.error("Failed to send appointment notification:", err);
-    });
+    sendNotification(organizationId, phone, sanitizedName, appointmentDate);
 
     return {
       success: true,
@@ -461,7 +562,7 @@ async function bookViaCal(
       };
     }
 
-    console.error("Book appointment error:", error.message);
+    console.error("Book appointment error:", { organizationId, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
@@ -512,7 +613,7 @@ async function checkAvailabilityViaCal(
 
     return { success: true, message: formatAvailabilityForVoice(availability) };
   } catch (error: any) {
-    console.error("Check availability error:", error.message);
+    console.error("Check availability error:", { organizationId, date, message: error.message, stack: error.stack });
     return {
       success: false,
       message:
@@ -544,21 +645,32 @@ async function bookInternal(
 
   const endDate = new Date(startDate.getTime() + SLOT_DURATION_MINUTES * 60_000);
 
-  // 1. Get business hours to validate the slot
-  const { data: org } = await (supabase as any)
-    .from("organizations")
-    .select("business_hours, timezone")
-    .eq("id", organizationId)
-    .single();
+  // 1. Validate against business hours
+  let schedule: OrgSchedule | null;
+  try {
+    schedule = await getOrgSchedule(organizationId);
+  } catch {
+    return {
+      success: false,
+      message:
+        "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
+    };
+  }
 
-  if (org?.business_hours) {
-    const timezone: string = org.timezone || "America/New_York";
-    const dayName = startDate
-      .toLocaleDateString("en-US", { weekday: "long", timeZone: timezone })
-      .toLowerCase();
-    const hours: BusinessHours | null = org.business_hours[dayName];
+  if (schedule) {
+    const dateStr = startDate.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      timeZone: schedule.timezone,
+    });
+    // Parse MM/DD/YYYY to YYYY-MM-DD
+    const [mo, da, yr] = dateStr.split("/");
+    const localDate = `${yr}-${mo}-${da}`;
 
-    if (!hours || !hours.open || !hours.close) {
+    const hours = getHoursForDate(schedule, localDate);
+
+    if (!hours) {
       return {
         success: false,
         message:
@@ -566,20 +678,14 @@ async function bookInternal(
       };
     }
 
-    // Check that the requested time falls within business hours
-    const [openH, openM] = hours.open.split(":").map(Number);
-    const [closeH, closeM] = hours.close.split(":").map(Number);
-    const openMinutes = openH * 60 + openM;
-    const closeMinutes = closeH * 60 + closeM;
-
-    const reqH = startDate.getHours();
-    const reqM = startDate.getMinutes();
+    // Extract hour:minute in the org's timezone, not the server's
+    const { h: reqH, m: reqM } = getTimeInTimezone(startDate, schedule.timezone);
     const reqMinutes = reqH * 60 + reqM;
     const reqEndMinutes = reqMinutes + SLOT_DURATION_MINUTES;
 
-    if (reqMinutes < openMinutes || reqEndMinutes > closeMinutes) {
-      const openStr = formatTime(openH, openM);
-      const closeStr = formatTime(closeH, closeM);
+    if (reqMinutes < hours.open || reqEndMinutes > hours.close) {
+      const openStr = formatTime(Math.floor(hours.open / 60), hours.open % 60);
+      const closeStr = formatTime(Math.floor(hours.close / 60), hours.close % 60);
       return {
         success: false,
         message: `That time is outside our business hours. We're open from ${openStr} to ${closeStr}. Would you like to pick a time within those hours?`,
@@ -627,31 +733,11 @@ async function bookInternal(
     };
   }
 
-  // 4. Send notification
-  await sendAppointmentNotification({
-    organizationId,
-    callerPhone: phone,
-    callerName: sanitizedName,
-    appointmentDate: startDate,
-    appointmentTime: startDate.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    }),
-  }).catch((err) => {
-    console.error("Failed to send appointment notification:", err);
-  });
+  // 3. Send notification
+  sendNotification(organizationId, phone, sanitizedName, startDate);
 
-  const dateStr = startDate.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
-  const timeStr = startDate.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
+  const timezone = schedule?.timezone || "America/New_York";
+  const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
   return {
     success: true,
@@ -664,9 +750,25 @@ async function bookInternal(
   };
 }
 
-function formatTime(h: number, m: number): string {
-  const period = h >= 12 ? "PM" : "AM";
-  const hour12 = h % 12 || 12;
-  const mins = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
-  return `${hour12}${mins} ${period}`;
+// ─── Notification helper ────────────────────────────────────────────────────
+
+function sendNotification(
+  organizationId: string,
+  phone: string,
+  name: string,
+  appointmentDate: Date
+) {
+  sendAppointmentNotification({
+    organizationId,
+    callerPhone: phone,
+    callerName: name,
+    appointmentDate,
+    appointmentTime: appointmentDate.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }),
+  }).catch((err) => {
+    console.error("Failed to send appointment notification:", err);
+  });
 }
