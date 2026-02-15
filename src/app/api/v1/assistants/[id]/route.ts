@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
+import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -18,6 +19,7 @@ interface Assistant {
   model_provider: string;
   model: string;
   system_prompt: string;
+  first_message: string;
   voice_provider: string;
   voice_id: string;
   prompt_config: Record<string, any> | null;
@@ -36,7 +38,13 @@ const updateAssistantSchema = z.object({
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
   promptConfig: promptConfigSchema.optional(),
-  settings: z.record(z.any()).optional(),
+  settings: z.object({
+    recordingEnabled: z.boolean().optional(),
+    recordingDisclosure: z.string().optional(),
+    maxCallDuration: z.number().optional(),
+    spamFilterEnabled: z.boolean().optional(),
+    industry: z.string().optional(),
+  }).passthrough().optional(),
 });
 
 // GET /api/v1/assistants/[id] - Get a single assistant
@@ -125,6 +133,13 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateAssistantSchema.parse(body);
 
+    // Merge incoming settings with existing to preserve fields like industry
+    const mergedSettings = {
+      ...(currentAssistant.settings || {}),
+      ...(validatedData.settings || {}),
+    };
+    const { recordingEnabled, recordingDisclosure } = resolveRecordingSettings(mergedSettings);
+
     // Sync relevant changes to Vapi
     if (currentAssistant.vapi_assistant_id) {
       const vapi = getVapiClient();
@@ -134,12 +149,13 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
-      // Only rebuild model when prompt, model, or tool-related fields change
+      // Only rebuild model when prompt, model, or recording settings change
       const needsModelUpdate =
         validatedData.systemPrompt ||
         validatedData.promptConfig !== undefined ||
         validatedData.model ||
-        validatedData.modelProvider;
+        validatedData.modelProvider ||
+        validatedData.settings?.recordingEnabled !== undefined;
 
       if (needsModelUpdate) {
         let toolIds: string[];
@@ -166,8 +182,7 @@ export async function PATCH(
         let vapiSystemPrompt = rawPrompt;
         if (promptConfig) {
           const config = promptConfig as PromptConfig;
-          const settings = validatedData.settings || currentAssistant.settings || {};
-          const industry = settings.industry || "other";
+          const industry = mergedSettings.industry || "other";
           vapiSystemPrompt = buildPromptFromConfig(config, {
             businessName: validatedData.name || currentAssistant.name,
             industry,
@@ -179,6 +194,11 @@ export async function PATCH(
           } else {
             vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
           }
+        }
+
+        // When recording is on, instruct the AI to handle opt-out requests
+        if (recordingEnabled) {
+          vapiSystemPrompt = `${vapiSystemPrompt}\n\n${RECORDING_DECLINE_SYSTEM_INSTRUCTION}`;
         }
 
         vapiUpdate.model = {
@@ -195,8 +215,21 @@ export async function PATCH(
           voiceId: validatedData.voiceId || currentAssistant.voice_id,
         };
       }
-      if (validatedData.firstMessage) {
-        vapiUpdate.firstMessage = validatedData.firstMessage;
+
+      // Rebuild firstMessage with disclosure whenever firstMessage, settings, or name changes
+      if (validatedData.firstMessage || validatedData.settings !== undefined || validatedData.name) {
+        const effectiveFirstMessage = validatedData.firstMessage || currentAssistant.first_message;
+        const effectiveName = validatedData.name || currentAssistant.name;
+        vapiUpdate.firstMessage = buildFirstMessageWithDisclosure(
+          effectiveFirstMessage,
+          recordingDisclosure,
+          effectiveName
+        );
+      }
+
+      // Sync recordingEnabled to Vapi
+      if (validatedData.settings !== undefined) {
+        vapiUpdate.recordingEnabled = recordingEnabled;
       }
 
       // Attach webhook server config if APP_URL is configured
@@ -239,7 +272,7 @@ export async function PATCH(
     if (validatedData.tools !== undefined) updateData.tools = validatedData.tools;
     if (validatedData.isActive !== undefined) updateData.is_active = validatedData.isActive;
     if (validatedData.promptConfig !== undefined) updateData.prompt_config = validatedData.promptConfig;
-    if (validatedData.settings !== undefined) updateData.settings = validatedData.settings;
+    if (validatedData.settings !== undefined) updateData.settings = mergedSettings;
 
     const { data: assistant, error } = await (supabase
       .from("assistants") as any)

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
+import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -21,7 +22,13 @@ const createAssistantSchema = z.object({
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   promptConfig: promptConfigSchema.optional(),
-  settings: z.record(z.any()).optional(),
+  settings: z.object({
+    recordingEnabled: z.boolean().optional(),
+    recordingDisclosure: z.string().optional(),
+    maxCallDuration: z.number().optional(),
+    spamFilterEnabled: z.boolean().optional(),
+    industry: z.string().optional(),
+  }).passthrough().optional(),
 });
 
 // Map common voice provider names to Vapi's expected values
@@ -144,6 +151,21 @@ export async function POST(request: Request) {
       );
     }
 
+    // Resolve recording settings (default: on with standard disclosure)
+    const { recordingEnabled, recordingDisclosure } = resolveRecordingSettings(validatedData.settings);
+
+    // Combine disclosure + greeting for Vapi's firstMessage
+    const vapiFirstMessage = buildFirstMessageWithDisclosure(
+      validatedData.firstMessage,
+      recordingDisclosure,
+      validatedData.name
+    );
+
+    // When recording is on, instruct the AI to handle opt-out requests
+    if (recordingEnabled) {
+      vapiSystemPrompt = `${vapiSystemPrompt}\n\n${RECORDING_DECLINE_SYSTEM_INSTRUCTION}`;
+    }
+
     // Create assistant in Vapi — reference calendar tools by ID via model.toolIds
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
@@ -158,14 +180,14 @@ export async function POST(request: Request) {
         provider: normalizeVoiceProvider(validatedData.voiceProvider),
         voiceId: validatedData.voiceId,
       },
-      firstMessage: validatedData.firstMessage,
+      firstMessage: vapiFirstMessage,
       transcriber: {
         provider: "deepgram",
         model: "nova-2",
         language: "en",
       },
       server: serverConfig,
-      recordingEnabled: true,
+      recordingEnabled,
       ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,

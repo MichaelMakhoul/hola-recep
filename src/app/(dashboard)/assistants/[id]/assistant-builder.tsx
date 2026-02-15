@@ -37,7 +37,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { getIndustryTemplates } from "@/lib/templates";
+import { getIndustryTemplates, DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templates";
 import { PromptBuilder } from "@/components/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 
@@ -121,6 +121,12 @@ export function AssistantBuilder({
   const [spamFilterEnabled, setSpamFilterEnabled] = useState(
     assistant.settings?.spamFilterEnabled ?? true
   );
+  const [recordingEnabled, setRecordingEnabled] = useState(
+    assistant.settings?.recordingEnabled ?? true
+  );
+  const [recordingDisclosure, setRecordingDisclosure] = useState(
+    assistant.settings?.recordingDisclosure ?? DEFAULT_RECORDING_DISCLOSURE
+  );
 
   // Transfer rules state
   const [transferRules, setTransferRules] = useState(initialTransferRules);
@@ -170,15 +176,19 @@ export function AssistantBuilder({
           model,
           isActive,
           settings: {
+            ...assistant.settings,
             maxCallDuration,
             spamFilterEnabled,
+            recordingEnabled,
+            recordingDisclosure,
           },
           promptConfig: useGuidedBuilder ? promptConfig : null,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to save assistant");
+        const errorBody = await response.json().catch(() => null);
+        throw new Error(errorBody?.error || "Failed to save assistant");
       }
 
       toast({
@@ -187,11 +197,11 @@ export function AssistantBuilder({
       });
 
       router.refresh();
-    } catch {
+    } catch (error) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to save assistant settings.",
+        description: error instanceof Error ? error.message : "Failed to save assistant settings.",
       });
     } finally {
       setIsSaving(false);
@@ -620,6 +630,45 @@ export function AssistantBuilder({
                   checked={spamFilterEnabled}
                   onCheckedChange={setSpamFilterEnabled}
                 />
+              </div>
+
+              <div className="border-t pt-4 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Call Recording</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Record calls for quality assurance. A disclosure will be
+                      played at the start of each call.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={recordingEnabled}
+                    onCheckedChange={setRecordingEnabled}
+                  />
+                </div>
+
+                {recordingEnabled && (
+                  <div className="space-y-2">
+                    <Label htmlFor="recordingDisclosure">
+                      Recording & AI Disclosure
+                    </Label>
+                    <Textarea
+                      id="recordingDisclosure"
+                      value={recordingDisclosure}
+                      onChange={(e) => setRecordingDisclosure(e.target.value)}
+                      rows={4}
+                      placeholder="Disclosure message played before the greeting..."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      This message is spoken before your greeting. Use{" "}
+                      <code className="bg-muted px-1 rounded">
+                        {"{business_name}"}
+                      </code>{" "}
+                      to insert your business name. Callers who decline
+                      recording will be offered a transfer to a team member.
+                    </p>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -18,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { ArrowLeft, Bot } from "lucide-react";
+import { DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templates";
 
 const VOICE_OPTIONS = [
   { value: "rachel", label: "Rachel (Female)", provider: "11labs" },
@@ -57,6 +59,10 @@ export default function NewAssistantPage() {
   );
   const [voiceId, setVoiceId] = useState("rachel");
   const [model, setModel] = useState("gpt-4o-mini");
+  const [recordingEnabled, setRecordingEnabled] = useState(true);
+  const [recordingDisclosure, setRecordingDisclosure] = useState(
+    DEFAULT_RECORDING_DISCLOSURE
+  );
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
   const { toast } = useToast();
@@ -94,12 +100,16 @@ export default function NewAssistantPage() {
           voiceProvider: selectedVoice?.provider || "11labs",
           model,
           modelProvider: selectedModel?.provider || "openai",
+          settings: {
+            recordingEnabled,
+            recordingDisclosure,
+          },
         }),
       });
 
       if (!vapiResponse.ok) {
         const error = await vapiResponse.json();
-        throw new Error(error.message || "Failed to create assistant");
+        throw new Error(error.error || error.message || "Failed to create assistant");
       }
 
       const assistant = await vapiResponse.json();
@@ -236,6 +246,54 @@ export default function NewAssistantPage() {
                 </Select>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Recording */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Call Recording</CardTitle>
+            <CardDescription>
+              Configure call recording and legal disclosure
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Enable Call Recording</Label>
+                <p className="text-xs text-muted-foreground">
+                  Record calls for quality assurance. A disclosure will be
+                  played at the start of each call.
+                </p>
+              </div>
+              <Switch
+                checked={recordingEnabled}
+                onCheckedChange={setRecordingEnabled}
+              />
+            </div>
+
+            {recordingEnabled && (
+              <div className="space-y-2">
+                <Label htmlFor="recordingDisclosure">
+                  Recording & AI Disclosure
+                </Label>
+                <Textarea
+                  id="recordingDisclosure"
+                  value={recordingDisclosure}
+                  onChange={(e) => setRecordingDisclosure(e.target.value)}
+                  rows={4}
+                  placeholder="Disclosure message played before the greeting..."
+                />
+                <p className="text-xs text-muted-foreground">
+                  This message is spoken before your greeting. Use{" "}
+                  <code className="bg-muted px-1 rounded">
+                    {"{business_name}"}
+                  </code>{" "}
+                  to insert your business name. Callers who decline
+                  recording will be offered a transfer to a team member.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
 
