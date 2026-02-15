@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
-import { calendarTools } from "@/lib/calendar/cal-com";
+import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -126,7 +125,7 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateAssistantSchema.parse(body);
 
-    // Update in Vapi if there are voice/model changes
+    // Sync relevant changes to Vapi
     if (currentAssistant.vapi_assistant_id) {
       const vapi = getVapiClient();
       const vapiUpdate: Record<string, unknown> = {};
@@ -135,13 +134,30 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
-      // Inject org knowledge base into the system prompt for Vapi
-      const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
-      const promptConfig = validatedData.promptConfig !== undefined
-        ? validatedData.promptConfig
-        : currentAssistant.prompt_config;
+      // Only rebuild model when prompt, model, or tool-related fields change
+      const needsModelUpdate =
+        validatedData.systemPrompt ||
+        validatedData.promptConfig !== undefined ||
+        validatedData.model ||
+        validatedData.modelProvider;
 
-      if (validatedData.systemPrompt || validatedData.promptConfig !== undefined || validatedData.model || validatedData.modelProvider) {
+      if (needsModelUpdate) {
+        let toolIds: string[];
+        try {
+          toolIds = await ensureCalendarTools();
+        } catch (toolError) {
+          console.error("Failed to provision calendar tools in Vapi:", toolError);
+          return NextResponse.json(
+            { error: "Failed to set up calendar tools. Please try again." },
+            { status: 502 }
+          );
+        }
+
+        const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
+        const promptConfig = validatedData.promptConfig !== undefined
+          ? validatedData.promptConfig
+          : currentAssistant.prompt_config;
+
         const aggregatedKB = await getAggregatedKnowledgeBase(
           supabase,
           membership.organization_id
@@ -169,6 +185,7 @@ export async function PATCH(
           provider: validatedData.modelProvider || currentAssistant.model_provider,
           model: validatedData.model || currentAssistant.model,
           messages: [{ role: "system", content: vapiSystemPrompt }],
+          toolIds,
         };
       }
 
@@ -182,23 +199,11 @@ export async function PATCH(
         vapiUpdate.firstMessage = validatedData.firstMessage;
       }
 
-      // Always ensure server URL and tools are set
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-      const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
-      if (appUrl) {
-        vapiUpdate.server = {
-          url: `${appUrl}/api/webhooks/vapi`,
-          timeoutSeconds: 20,
-          ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
-        };
+      // Attach webhook server config if APP_URL is configured
+      const serverConfig = buildVapiServerConfig();
+      if (serverConfig) {
+        vapiUpdate.server = serverConfig;
       }
-
-      // Always include calendar tools — built-in booking handles orgs without Cal.com
-      vapiUpdate.tools = [
-        calendarTools.checkAvailability,
-        calendarTools.bookAppointment,
-        calendarTools.cancelAppointment,
-      ];
 
       // Build analysis plan from prompt config if provided
       if (validatedData.promptConfig) {

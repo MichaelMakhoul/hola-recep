@@ -116,6 +116,13 @@ export interface VapiTool {
   server?: ServerConfig;
 }
 
+export interface VapiStandaloneTool extends VapiTool {
+  id: string;
+  orgId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface CreateAssistantRequest {
   name: string;
   model: {
@@ -124,6 +131,7 @@ export interface CreateAssistantRequest {
     messages?: { role: string; content: string }[];
     systemPrompt?: string;
     temperature?: number;
+    toolIds?: string[];
   };
   voice: {
     provider: string;
@@ -139,7 +147,6 @@ export interface CreateAssistantRequest {
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   analysisPlan?: VapiAnalysisPlan;
-  tools?: VapiTool[];
   metadata?: Record<string, unknown>;
 }
 
@@ -151,6 +158,7 @@ export interface UpdateAssistantRequest {
     messages?: { role: string; content: string }[];
     systemPrompt?: string;
     temperature?: number;
+    toolIds?: string[];
   };
   voice?: {
     provider?: string;
@@ -166,7 +174,6 @@ export interface UpdateAssistantRequest {
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   analysisPlan?: VapiAnalysisPlan;
-  tools?: VapiTool[];
   metadata?: Record<string, unknown>;
 }
 
@@ -373,6 +380,22 @@ export class VapiClient {
   }
 
   // ============================================
+  // TOOL METHODS (standalone tools API)
+  // ============================================
+
+  async createTool(data: {
+    type: "function";
+    function: VapiToolFunction;
+    server?: ServerConfig;
+  }): Promise<VapiStandaloneTool> {
+    return this.request<VapiStandaloneTool>("POST", "/tool", data);
+  }
+
+  async listTools(): Promise<VapiStandaloneTool[]> {
+    return this.request<VapiStandaloneTool[]>("GET", "/tool");
+  }
+
+  // ============================================
   // WEB CALL METHODS (for test calls in browser)
   // ============================================
 
@@ -397,6 +420,18 @@ export function getVapiClient(): VapiClient {
     vapiClient = new VapiClient();
   }
   return vapiClient;
+}
+
+/** Builds the Vapi webhook server config. Returns undefined if NEXT_PUBLIC_APP_URL is not set. */
+export function buildVapiServerConfig(): ServerConfig | undefined {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
+  if (!appUrl) return undefined;
+  return {
+    url: `${appUrl}/api/webhooks/vapi`,
+    timeoutSeconds: 20,
+    ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
+  };
 }
 
 export { VapiError };

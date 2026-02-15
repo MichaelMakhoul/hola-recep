@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
-import { calendarTools } from "@/lib/calendar/cal-com";
+import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -100,14 +99,7 @@ export async function POST(request: Request) {
     const validatedData = createAssistantSchema.parse(body);
 
     // Build server configuration for webhooks
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-    const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
-
-    const serverConfig = appUrl ? {
-      url: `${appUrl}/api/webhooks/vapi`,
-      timeoutSeconds: 20,
-      ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
-    } : undefined;
+    const serverConfig = buildVapiServerConfig();
 
     // Build analysis plan from prompt config if available
     const analysisPlan = validatedData.promptConfig
@@ -140,8 +132,19 @@ export async function POST(request: Request) {
       }
     }
 
-    // Create assistant in Vapi — always include calendar tools so the AI
-    // can book appointments via built-in booking or Cal.com
+    // Ensure standalone calendar tools exist in Vapi and get their IDs (cached after first call)
+    let toolIds: string[];
+    try {
+      toolIds = await ensureCalendarTools();
+    } catch (toolError) {
+      console.error("Failed to provision calendar tools in Vapi:", toolError);
+      return NextResponse.json(
+        { error: "Failed to set up calendar tools. Please try again." },
+        { status: 502 }
+      );
+    }
+
+    // Create assistant in Vapi — reference calendar tools by ID via model.toolIds
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
       name: validatedData.name,
@@ -149,6 +152,7 @@ export async function POST(request: Request) {
         provider: validatedData.modelProvider,
         model: validatedData.model,
         messages: [{ role: "system", content: vapiSystemPrompt }],
+        toolIds,
       },
       voice: {
         provider: normalizeVoiceProvider(validatedData.voiceProvider),
@@ -162,11 +166,6 @@ export async function POST(request: Request) {
       },
       server: serverConfig,
       recordingEnabled: true,
-      tools: [
-        calendarTools.checkAvailability,
-        calendarTools.bookAppointment,
-        calendarTools.cancelAppointment,
-      ],
       ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,
