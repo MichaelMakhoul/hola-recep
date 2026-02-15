@@ -587,25 +587,8 @@ async function bookInternal(
     }
   }
 
-  // 2. Check for overlapping appointments
-  const { data: conflicts } = await (supabase as any)
-    .from("appointments")
-    .select("id")
-    .eq("organization_id", organizationId)
-    .in("status", ["confirmed", "pending"])
-    .lt("start_time", endDate.toISOString())
-    .gt("end_time", startDate.toISOString())
-    .limit(1);
-
-  if (conflicts && conflicts.length > 0) {
-    return {
-      success: false,
-      message:
-        "I'm sorry, that time slot is no longer available. Would you like me to check for other available times?",
-    };
-  }
-
-  // 3. Insert appointment
+  // 2. Insert appointment — the DB exclusion constraint (no_overlapping_appointments)
+  //    prevents double-bookings atomically, so we rely on INSERT failure for conflicts.
   const bookingEmail =
     email || `booking-${crypto.randomUUID()}@noreply.holarecep.com`;
 
@@ -628,6 +611,14 @@ async function bookInternal(
     .single();
 
   if (dbError) {
+    // Exclusion constraint violation = overlapping appointment
+    if (dbError.code === "23P01") {
+      return {
+        success: false,
+        message:
+          "I'm sorry, that time slot is no longer available. Would you like me to check for other available times?",
+      };
+    }
     console.error("Failed to insert internal appointment:", dbError);
     return {
       success: false,
