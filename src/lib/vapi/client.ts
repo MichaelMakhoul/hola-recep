@@ -116,6 +116,16 @@ export interface VapiTool {
   server?: ServerConfig;
 }
 
+export interface VapiStandaloneTool {
+  id: string;
+  type: "function";
+  function: VapiToolFunction;
+  server?: ServerConfig;
+  orgId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface CreateAssistantRequest {
   name: string;
   model: {
@@ -124,6 +134,7 @@ export interface CreateAssistantRequest {
     messages?: { role: string; content: string }[];
     systemPrompt?: string;
     temperature?: number;
+    toolIds?: string[];
   };
   voice: {
     provider: string;
@@ -139,7 +150,6 @@ export interface CreateAssistantRequest {
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   analysisPlan?: VapiAnalysisPlan;
-  tools?: VapiTool[];
   metadata?: Record<string, unknown>;
 }
 
@@ -151,6 +161,7 @@ export interface UpdateAssistantRequest {
     messages?: { role: string; content: string }[];
     systemPrompt?: string;
     temperature?: number;
+    toolIds?: string[];
   };
   voice?: {
     provider?: string;
@@ -166,7 +177,6 @@ export interface UpdateAssistantRequest {
   endCallFunctionEnabled?: boolean;
   recordingEnabled?: boolean;
   analysisPlan?: VapiAnalysisPlan;
-  tools?: VapiTool[];
   metadata?: Record<string, unknown>;
 }
 
@@ -370,6 +380,22 @@ export class VapiClient {
 
   async endCall(callId: string): Promise<void> {
     await this.request<void>("POST", `/call/${callId}/stop`);
+  }
+
+  // ============================================
+  // TOOL METHODS (standalone tools API)
+  // ============================================
+
+  async createTool(data: {
+    type: "function";
+    function: VapiToolFunction;
+    server?: ServerConfig;
+  }): Promise<VapiStandaloneTool> {
+    return this.request<VapiStandaloneTool>("POST", "/tool", data);
+  }
+
+  async listTools(): Promise<VapiStandaloneTool[]> {
+    return this.request<VapiStandaloneTool[]>("GET", "/tool");
   }
 
   // ============================================

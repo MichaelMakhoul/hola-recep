@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
-import { calendarTools } from "@/lib/calendar/cal-com";
+import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -140,8 +139,10 @@ export async function POST(request: Request) {
       }
     }
 
-    // Create assistant in Vapi — always include calendar tools so the AI
-    // can book appointments via built-in booking or Cal.com
+    // Ensure standalone calendar tools exist in Vapi and get their IDs
+    const toolIds = await ensureCalendarTools();
+
+    // Create assistant in Vapi — reference calendar tools by ID via model.toolIds
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
       name: validatedData.name,
@@ -149,6 +150,7 @@ export async function POST(request: Request) {
         provider: validatedData.modelProvider,
         model: validatedData.model,
         messages: [{ role: "system", content: vapiSystemPrompt }],
+        toolIds,
       },
       voice: {
         provider: normalizeVoiceProvider(validatedData.voiceProvider),
@@ -162,11 +164,6 @@ export async function POST(request: Request) {
       },
       server: serverConfig,
       recordingEnabled: true,
-      tools: [
-        calendarTools.checkAvailability,
-        calendarTools.bookAppointment,
-        calendarTools.cancelAppointment,
-      ],
       ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,

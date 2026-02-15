@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient } from "@/lib/vapi";
-import { calendarTools } from "@/lib/calendar/cal-com";
+import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -135,6 +134,9 @@ export async function PATCH(
         vapiUpdate.name = validatedData.name;
       }
 
+      // Ensure standalone calendar tools exist and get their IDs
+      const toolIds = await ensureCalendarTools();
+
       // Inject org knowledge base into the system prompt for Vapi
       const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
       const promptConfig = validatedData.promptConfig !== undefined
@@ -169,6 +171,14 @@ export async function PATCH(
           provider: validatedData.modelProvider || currentAssistant.model_provider,
           model: validatedData.model || currentAssistant.model,
           messages: [{ role: "system", content: vapiSystemPrompt }],
+          toolIds,
+        };
+      } else {
+        // Even if no prompt/model changes, always send toolIds with the model
+        vapiUpdate.model = {
+          provider: currentAssistant.model_provider,
+          model: currentAssistant.model,
+          toolIds,
         };
       }
 
@@ -182,7 +192,7 @@ export async function PATCH(
         vapiUpdate.firstMessage = validatedData.firstMessage;
       }
 
-      // Always ensure server URL and tools are set
+      // Always ensure server URL is set
       const appUrl = process.env.NEXT_PUBLIC_APP_URL;
       const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
       if (appUrl) {
@@ -192,13 +202,6 @@ export async function PATCH(
           ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
         };
       }
-
-      // Always include calendar tools — built-in booking handles orgs without Cal.com
-      vapiUpdate.tools = [
-        calendarTools.checkAvailability,
-        calendarTools.bookAppointment,
-        calendarTools.cancelAppointment,
-      ];
 
       // Build analysis plan from prompt config if provided
       if (validatedData.promptConfig) {
