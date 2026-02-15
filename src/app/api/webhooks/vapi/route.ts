@@ -11,22 +11,20 @@ import {
   handleCancelAppointment,
 } from "@/lib/calendar/tool-handlers";
 
-// Verify Vapi webhook signature
-function verifySignature(payload: string, signature: string | null): boolean {
+// Verify Vapi webhook using custom header secret
+// Vapi sends the secret via the x-webhook-secret header (configured in server.headers)
+function verifyWebhookSecret(request: Request): boolean {
   const secret = process.env.VAPI_WEBHOOK_SECRET;
-  if (!secret || !signature) return false;
+  if (!secret) return false;
 
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
+  const headerSecret = request.headers.get("x-webhook-secret");
+  if (!headerSecret) return false;
 
-  // Prevent timing attacks by checking lengths first
-  const sigBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expectedSignature);
-  if (sigBuffer.length !== expectedBuffer.length) return false;
+  const secretBuffer = Buffer.from(secret);
+  const headerBuffer = Buffer.from(headerSecret);
+  if (secretBuffer.length !== headerBuffer.length) return false;
 
-  return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+  return crypto.timingSafeEqual(secretBuffer, headerBuffer);
 }
 
 interface VapiToolCall {
@@ -41,6 +39,8 @@ interface VapiToolCall {
 interface VapiCallEvent {
   message: {
     type: string;
+    status?: string; // For status-update events
+    endedReason?: string; // For end-of-call-report
     call?: {
       id: string;
       orgId: string;
@@ -71,6 +71,7 @@ interface VapiCallEvent {
       transcript?: string;
       recordingUrl?: string;
       summary?: string;
+      messages?: unknown[];
     };
     analysis?: {
       summary?: string;
@@ -78,6 +79,7 @@ interface VapiCallEvent {
     costBreakdown?: {
       total?: number;
     };
+    cost?: number;
   };
 }
 
@@ -107,9 +109,8 @@ export async function POST(request: Request) {
     }
 
     const payload = await request.text();
-    const signature = request.headers.get("x-vapi-signature");
 
-    // SECURITY: Always verify webhook signature
+    // SECURITY: Verify webhook using shared secret header
     // Only skip in explicit test mode with TEST_MODE=true
     const skipVerification = process.env.TEST_MODE === "true" && process.env.NODE_ENV !== "production";
 
@@ -119,8 +120,8 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Webhook not configured" }, { status: 500 });
       }
 
-      if (!verifySignature(payload, signature)) {
-        console.error("Invalid webhook signature");
+      if (!verifyWebhookSecret(request)) {
+        console.error("Invalid webhook secret");
         return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
       }
     }
@@ -131,66 +132,85 @@ export async function POST(request: Request) {
     console.log("Vapi webhook received:", event.message.type);
 
     // Handle different event types
+    // Vapi sends: status-update, end-of-call-report, tool-calls, transcript, etc.
     switch (event.message.type) {
-      case "call.started":
-      case "call-started": {
+      case "status-update": {
         const call = event.message.call;
+        const status = event.message.status || call?.status;
         if (!call) break;
 
-        // Find our phone number by Vapi phone number ID
-        const { data: phoneNumber } = await (supabase
-          .from("phone_numbers") as any)
-          .select("id, organization_id, assistant_id")
-          .eq("vapi_phone_number_id", call.phoneNumberId)
-          .single();
-
-        if (!phoneNumber) {
-          console.error("Phone number not found for Vapi ID:", call.phoneNumberId);
-          break;
-        }
-
-        // Find our assistant by Vapi assistant ID
-        let assistantId = phoneNumber.assistant_id;
-        if (call.assistantId) {
-          const { data: assistant } = await (supabase
-            .from("assistants") as any)
-            .select("id")
-            .eq("vapi_assistant_id", call.assistantId)
+        if (status === "in-progress") {
+          // Call started — create the call record
+          const { data: phoneNumber } = await (supabase
+            .from("phone_numbers") as any)
+            .select("id, organization_id, assistant_id")
+            .eq("vapi_phone_number_id", call.phoneNumberId)
             .single();
-          if (assistant) {
-            assistantId = assistant.id;
+
+          if (!phoneNumber) {
+            console.error("Phone number not found for Vapi ID:", call.phoneNumberId);
+            break;
           }
-        }
 
-        // Create call record
-        const { error: insertError } = await (supabase.from("calls") as any).insert({
-          organization_id: phoneNumber.organization_id,
-          assistant_id: assistantId,
-          phone_number_id: phoneNumber.id,
-          vapi_call_id: call.id,
-          caller_phone: call.customer?.number,
-          direction: call.type === "outbound" ? "outbound" : "inbound",
-          status: mapStatus(call.status),
-          started_at: call.startedAt,
-        });
+          let assistantId = phoneNumber.assistant_id;
+          if (call.assistantId) {
+            const { data: assistant } = await (supabase
+              .from("assistants") as any)
+              .select("id")
+              .eq("vapi_assistant_id", call.assistantId)
+              .single();
+            if (assistant) {
+              assistantId = assistant.id;
+            }
+          }
 
-        if (insertError) {
-          console.error("Failed to create call record:", {
-            vapiCallId: call.id,
-            organizationId: phoneNumber.organization_id,
-            error: insertError,
-          });
-          return NextResponse.json(
-            { error: "Failed to record call" },
-            { status: 500 }
-          );
+          // Upsert: create if not exists, update if already created
+          const { data: existingCall } = await (supabase
+            .from("calls") as any)
+            .select("id")
+            .eq("vapi_call_id", call.id)
+            .single();
+
+          if (!existingCall) {
+            const { error: insertError } = await (supabase.from("calls") as any).insert({
+              organization_id: phoneNumber.organization_id,
+              assistant_id: assistantId,
+              phone_number_id: phoneNumber.id,
+              vapi_call_id: call.id,
+              caller_phone: call.customer?.number,
+              direction: call.type === "outbound" ? "outbound" : "inbound",
+              status: "in-progress",
+              started_at: call.startedAt,
+            });
+
+            if (insertError) {
+              console.error("Failed to create call record:", {
+                vapiCallId: call.id,
+                organizationId: phoneNumber.organization_id,
+                error: insertError,
+              });
+              return NextResponse.json(
+                { error: "Failed to record call" },
+                { status: 500 }
+              );
+            }
+          } else {
+            await (supabase.from("calls") as any)
+              .update({ status: "in-progress", started_at: call.startedAt })
+              .eq("vapi_call_id", call.id);
+          }
+        } else {
+          // Other status updates (queued, ringing, forwarding, ended)
+          await (supabase
+            .from("calls") as any)
+            .update({ status: mapStatus(status || call.status) })
+            .eq("vapi_call_id", call.id);
         }
 
         break;
       }
 
-      case "call.ended":
-      case "call-ended": {
+      case "end-of-call-report": {
         const call = event.message.call;
         if (!call) break;
 
@@ -215,14 +235,53 @@ export async function POST(request: Request) {
         const recordingUrl =
           call.recordingUrl || event.message.artifact?.recordingUrl;
         const cost =
-          call.cost || event.message.costBreakdown?.total;
+          call.cost || event.message.cost || event.message.costBreakdown?.total;
+        const endedReason =
+          event.message.endedReason || call.endedReason;
 
-        // Get the call record to find organization_id
-        const { data: existingCall } = await (supabase
+        // Get or create the call record
+        let existingCall = (await (supabase
           .from("calls") as any)
           .select("id, organization_id, caller_phone")
           .eq("vapi_call_id", call.id)
-          .single();
+          .single()).data;
+
+        // If the call record doesn't exist (missed status-update), create it now
+        if (!existingCall) {
+          const { data: phoneNumber } = await (supabase
+            .from("phone_numbers") as any)
+            .select("id, organization_id, assistant_id")
+            .eq("vapi_phone_number_id", call.phoneNumberId)
+            .single();
+
+          if (phoneNumber) {
+            let assistantId = phoneNumber.assistant_id;
+            if (call.assistantId) {
+              const { data: assistant } = await (supabase
+                .from("assistants") as any)
+                .select("id")
+                .eq("vapi_assistant_id", call.assistantId)
+                .single();
+              if (assistant) assistantId = assistant.id;
+            }
+
+            const { data: newCall } = await (supabase.from("calls") as any)
+              .insert({
+                organization_id: phoneNumber.organization_id,
+                assistant_id: assistantId,
+                phone_number_id: phoneNumber.id,
+                vapi_call_id: call.id,
+                caller_phone: call.customer?.number,
+                direction: call.type === "outbound" ? "outbound" : "inbound",
+                status: "in-progress",
+                started_at: call.startedAt,
+              })
+              .select("id, organization_id, caller_phone")
+              .single();
+
+            existingCall = newCall;
+          }
+        }
 
         // Run spam analysis
         let spamAnalysis = null;
@@ -248,12 +307,12 @@ export async function POST(request: Request) {
           }
         }
 
-        // Determine call status
-        const callStatus = call.endedReason === "customer-ended" || call.endedReason === "assistant-ended"
+        // Determine call status from endedReason
+        const callStatus = endedReason === "customer-ended-call" || endedReason === "assistant-ended-call"
           ? "completed"
-          : call.endedReason === "no-answer"
+          : endedReason === "no-answer"
           ? "no-answer"
-          : call.endedReason === "busy"
+          : endedReason === "busy"
           ? "busy"
           : "completed";
 
@@ -267,7 +326,7 @@ export async function POST(request: Request) {
           (collectedData as Record<string, unknown> | null)?.name as string | undefined ??
           null;
 
-        // Update call record with spam analysis and collected data
+        // Update call record with full end-of-call data
         const { error: updateError } = await (supabase
           .from("calls") as any)
           .update({
@@ -283,7 +342,7 @@ export async function POST(request: Request) {
             ...(collectedData && { collected_data: collectedData }),
             ...(callerName && { caller_name: callerName }),
             metadata: {
-              endedReason: call.endedReason,
+              endedReason,
               analysis: call.analysis,
               successEvaluation,
               spamAnalysis: spamAnalysis ? {
@@ -303,7 +362,6 @@ export async function POST(request: Request) {
         }
 
         // Increment call usage for billing (skip for spam calls)
-        // Using call-based pricing: each answered call counts as 1, regardless of duration
         const shouldTrackUsage = callStatus === "completed" &&
           (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
 
@@ -311,13 +369,11 @@ export async function POST(request: Request) {
           const { success, shouldUpgrade } = await incrementCallUsage(existingCall.organization_id);
           if (shouldUpgrade) {
             console.log(`Organization ${existingCall.organization_id} approaching call limit`);
-            // In production, you might want to send a notification here
           }
         }
 
         // Send notifications based on call outcome (skip for spam)
         if (existingCall && !spamAnalysis?.isSpam) {
-          // Check if this was a missed call (no answer or very short duration)
           if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
             await sendMissedCallNotification({
               organizationId: existingCall.organization_id,
@@ -329,10 +385,7 @@ export async function POST(request: Request) {
             }).catch((err) => console.error("Failed to send missed call notification:", err));
           }
 
-          // Check if there's a voicemail (recording URL with short duration could be voicemail)
           if (recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10) {
-            // This heuristic assumes voicemails are typically 10-120 seconds
-            // In production, you'd have a separate voicemail detection mechanism
             await sendVoicemailNotification({
               organizationId: existingCall.organization_id,
               callId: existingCall.id,
@@ -348,8 +401,7 @@ export async function POST(request: Request) {
         break;
       }
 
-      case "transcript":
-      case "transcript-update": {
+      case "transcript": {
         const call = event.message.call;
         const transcript = event.message.transcript;
         if (!call || !transcript) break;
@@ -357,18 +409,6 @@ export async function POST(request: Request) {
         await (supabase
           .from("calls") as any)
           .update({ transcript })
-          .eq("vapi_call_id", call.id);
-
-        break;
-      }
-
-      case "status-update": {
-        const call = event.message.call;
-        if (!call) break;
-
-        await (supabase
-          .from("calls") as any)
-          .update({ status: mapStatus(call.status) })
           .eq("vapi_call_id", call.id);
 
         break;
