@@ -422,4 +422,15 @@ export function getVapiClient(): VapiClient {
   return vapiClient;
 }
 
+export function buildVapiServerConfig(): ServerConfig | undefined {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
+  if (!appUrl) return undefined;
+  return {
+    url: `${appUrl}/api/webhooks/vapi`,
+    timeoutSeconds: 20,
+    ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
+  };
+}
+
 export { VapiError };

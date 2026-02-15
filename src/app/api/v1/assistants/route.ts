@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
+import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -99,14 +99,7 @@ export async function POST(request: Request) {
     const validatedData = createAssistantSchema.parse(body);
 
     // Build server configuration for webhooks
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-    const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
-
-    const serverConfig = appUrl ? {
-      url: `${appUrl}/api/webhooks/vapi`,
-      timeoutSeconds: 20,
-      ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
-    } : undefined;
+    const serverConfig = buildVapiServerConfig();
 
     // Build analysis plan from prompt config if available
     const analysisPlan = validatedData.promptConfig

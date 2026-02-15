@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
+import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -146,55 +146,41 @@ export async function PATCH(
         );
       }
 
-      // Always send model with toolIds; add messages when prompt/model changes
-      const hasPromptOrModelChanges =
-        validatedData.systemPrompt ||
-        validatedData.promptConfig !== undefined ||
-        validatedData.model ||
-        validatedData.modelProvider;
+      // Always build the full system prompt with KB injection so Vapi stays in sync
+      const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
+      const promptConfig = validatedData.promptConfig !== undefined
+        ? validatedData.promptConfig
+        : currentAssistant.prompt_config;
 
-      const modelPayload: Record<string, unknown> = {
-        provider: validatedData.modelProvider || currentAssistant.model_provider,
-        model: validatedData.model || currentAssistant.model,
-        toolIds,
-      };
+      const aggregatedKB = await getAggregatedKnowledgeBase(
+        supabase,
+        membership.organization_id
+      );
 
-      if (hasPromptOrModelChanges) {
-        const rawPrompt = validatedData.systemPrompt || currentAssistant.system_prompt;
-        const promptConfig = validatedData.promptConfig !== undefined
-          ? validatedData.promptConfig
-          : currentAssistant.prompt_config;
-
-        const aggregatedKB = await getAggregatedKnowledgeBase(
-          supabase,
-          membership.organization_id
-        );
-
-        let vapiSystemPrompt = rawPrompt;
-        if (promptConfig) {
-          const config = promptConfig as PromptConfig;
-          const settings = validatedData.settings || currentAssistant.settings || {};
-          const industry = settings.industry || "other";
-          vapiSystemPrompt = buildPromptFromConfig(config, {
-            businessName: validatedData.name || currentAssistant.name,
-            industry,
-            knowledgeBase: aggregatedKB || undefined,
-          });
-        } else if (aggregatedKB) {
-          if (rawPrompt.includes("{knowledge_base}")) {
-            vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
-          } else {
-            vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
-          }
+      let vapiSystemPrompt = rawPrompt;
+      if (promptConfig) {
+        const config = promptConfig as PromptConfig;
+        const settings = validatedData.settings || currentAssistant.settings || {};
+        const industry = settings.industry || "other";
+        vapiSystemPrompt = buildPromptFromConfig(config, {
+          businessName: validatedData.name || currentAssistant.name,
+          industry,
+          knowledgeBase: aggregatedKB || undefined,
+        });
+      } else if (aggregatedKB) {
+        if (rawPrompt.includes("{knowledge_base}")) {
+          vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
+        } else {
+          vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
         }
-
-        modelPayload.messages = [{ role: "system", content: vapiSystemPrompt }];
-      } else {
-        // Preserve the existing system prompt so Vapi doesn't clear it
-        modelPayload.messages = [{ role: "system", content: currentAssistant.system_prompt }];
       }
 
-      vapiUpdate.model = modelPayload;
+      vapiUpdate.model = {
+        provider: validatedData.modelProvider || currentAssistant.model_provider,
+        model: validatedData.model || currentAssistant.model,
+        messages: [{ role: "system", content: vapiSystemPrompt }],
+        toolIds,
+      };
 
       if (validatedData.voiceId || validatedData.voiceProvider) {
         vapiUpdate.voice = {
@@ -207,14 +193,9 @@ export async function PATCH(
       }
 
       // Always ensure server URL is set
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-      const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
-      if (appUrl) {
-        vapiUpdate.server = {
-          url: `${appUrl}/api/webhooks/vapi`,
-          timeoutSeconds: 20,
-          ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
-        };
+      const serverConfig = buildVapiServerConfig();
+      if (serverConfig) {
+        vapiUpdate.server = serverConfig;
       }
 
       // Build analysis plan from prompt config if provided

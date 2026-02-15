@@ -6,8 +6,7 @@
  * externally, a server restart is required to re-create them.
  */
 
-import { getVapiClient } from "./client";
-import type { ServerConfig } from "./client";
+import { getVapiClient, buildVapiServerConfig } from "./client";
 import { calendarTools } from "@/lib/calendar/cal-com";
 
 let pendingInit: Promise<string[]> | null = null;
@@ -31,20 +30,9 @@ export async function ensureCalendarTools(): Promise<string[]> {
   }
 }
 
-function buildServerConfig(): ServerConfig | undefined {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
-  if (!appUrl) return undefined;
-  return {
-    url: `${appUrl}/api/webhooks/vapi`,
-    timeoutSeconds: 20,
-    ...(webhookSecret && { headers: { "x-webhook-secret": webhookSecret } }),
-  };
-}
-
 async function resolveCalendarTools(): Promise<string[]> {
   const vapi = getVapiClient();
-  const serverConfig = buildServerConfig();
+  const serverConfig = buildVapiServerConfig();
 
   let existing;
   try {
