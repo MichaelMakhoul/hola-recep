@@ -136,12 +136,13 @@ function formatTime(h: number, m: number): string {
  */
 async function getBuiltInAvailability(
   organizationId: string,
-  date: string
+  date: string,
+  schedule?: OrgSchedule | null
 ): Promise<string[]> {
-  const schedule = await getOrgSchedule(organizationId);
-  if (!schedule) return [];
+  const resolvedSchedule = schedule ?? (await getOrgSchedule(organizationId));
+  if (!resolvedSchedule) return [];
 
-  const hours = getHoursForDate(schedule, date);
+  const hours = getHoursForDate(resolvedSchedule, date);
   if (!hours) return []; // Closed
 
   // Generate slot start times in org-local time
@@ -337,7 +338,7 @@ export async function handleCheckAvailability(
   try {
     const schedule = await getOrgSchedule(organizationId);
     const timezone = schedule?.timezone || "America/New_York";
-    const slots = await getBuiltInAvailability(organizationId, date);
+    const slots = await getBuiltInAvailability(organizationId, date, schedule);
     return {
       success: true,
       message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
@@ -404,7 +405,7 @@ export async function handleCancelAppointment(
           appointment.metadata.calComBookingId,
           reason || "Cancelled by caller"
         );
-      } else if (appointment.external_id) {
+      } else {
         console.warn("Cannot cancel Cal.com booking: missing client or booking ID", {
           organizationId,
           appointmentId: appointment.id,
@@ -539,9 +540,10 @@ async function bookViaCal(
       };
     }
 
-    // Send notification
+    // Send notification — best-effort timezone fetch
     const appointmentDate = new Date(datetime);
-    sendNotification(organizationId, phone, sanitizedName, appointmentDate);
+    const calSchedule = await getOrgSchedule(organizationId).catch(() => null);
+    sendNotification(organizationId, phone, sanitizedName, appointmentDate, calSchedule?.timezone);
 
     return {
       success: true,
@@ -658,14 +660,15 @@ async function bookInternal(
   }
 
   if (schedule) {
-    const dateStr = startDate.toLocaleDateString("en-US", {
+    const parts = new Intl.DateTimeFormat("en-US", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
       timeZone: schedule.timezone,
-    });
-    // Parse MM/DD/YYYY to YYYY-MM-DD
-    const [mo, da, yr] = dateStr.split("/");
+    }).formatToParts(startDate);
+    const yr = parts.find((p) => p.type === "year")!.value;
+    const mo = parts.find((p) => p.type === "month")!.value;
+    const da = parts.find((p) => p.type === "day")!.value;
     const localDate = `${yr}-${mo}-${da}`;
 
     const hours = getHoursForDate(schedule, localDate);
@@ -734,9 +737,8 @@ async function bookInternal(
   }
 
   // 3. Send notification
-  sendNotification(organizationId, phone, sanitizedName, startDate);
-
   const timezone = schedule?.timezone || "America/New_York";
+  sendNotification(organizationId, phone, sanitizedName, startDate, timezone);
   const { dateStr, timeStr } = formatDateTimeForVoice(startDate, timezone);
 
   return {
@@ -756,7 +758,8 @@ function sendNotification(
   organizationId: string,
   phone: string,
   name: string,
-  appointmentDate: Date
+  appointmentDate: Date,
+  timezone?: string
 ) {
   sendAppointmentNotification({
     organizationId,
@@ -767,6 +770,7 @@ function sendNotification(
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
+      ...(timezone && { timeZone: timezone }),
     }),
   }).catch((err) => {
     console.error("Failed to send appointment notification:", err);
