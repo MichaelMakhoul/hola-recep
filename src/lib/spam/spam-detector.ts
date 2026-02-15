@@ -11,6 +11,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getCountryConfig } from "@/lib/country-config";
 
 export interface SpamAnalysisResult {
   isSpam: boolean;
@@ -23,6 +24,7 @@ export interface SpamAnalysisResult {
 export interface CallMetadata {
   callerPhone: string;
   organizationId: string;
+  countryCode?: string;
   timestamp: Date;
   duration?: number;
   transcript?: string;
@@ -30,26 +32,6 @@ export interface CallMetadata {
 
 // Known spam patterns and indicators
 const SPAM_INDICATORS = {
-  // Common spam area codes (US)
-  suspiciousAreaCodes: [
-    "201", // High volume telemarketing
-    "202", // Government impersonation scams
-    "213", // Auto warranty scams
-    "267", // IRS scams
-    "315", // Insurance scams
-    "347", // Medicare scams
-    "407", // Vacation scams
-    "480", // Student loan scams
-    "619", // Business loan scams
-    "657", // Tech support scams
-    "720", // CBD/Cannabis spam
-    "773", // Social Security scams
-    "786", // Car warranty scams
-    "813", // Political spam
-    "904", // Time-share spam
-    "954", // Debt collector spam
-  ],
-
   // Patterns in caller ID names that suggest spam
   suspiciousCallerIdPatterns: [
     /^V\d+$/i, // V followed by numbers (V1234567)
@@ -101,7 +83,7 @@ const SPAM_INDICATORS = {
 /**
  * Analyze a phone number for spam indicators
  */
-function analyzePhoneNumber(phone: string): {
+function analyzePhoneNumber(phone: string, countryCode: string = "US"): {
   score: number;
   reasons: string[];
 } {
@@ -111,17 +93,20 @@ function analyzePhoneNumber(phone: string): {
   // Normalize phone number
   const normalized = phone.replace(/\D/g, "");
 
-  // Check if it's a valid US number
-  if (normalized.length !== 10 && normalized.length !== 11) {
+  // Country-aware validation
+  const config = getCountryConfig(countryCode);
+
+  if (!config.phone.validateNational(normalized)) {
     score += 10;
     reasons.push("Invalid phone number format");
   }
 
-  // Extract area code
-  const areaCode = normalized.length === 11 ? normalized.slice(1, 4) : normalized.slice(0, 3);
+  // Extract area code using country config
+  const areaCode = config.phone.extractAreaCode(normalized);
 
-  // Check against suspicious area codes
-  if (SPAM_INDICATORS.suspiciousAreaCodes.includes(areaCode)) {
+  // Check against suspicious area codes for this country
+  const suspiciousAreaCodes = config.suspiciousAreaCodes;
+  if (areaCode && suspiciousAreaCodes.includes(areaCode)) {
     score += 15;
     reasons.push(`Area code ${areaCode} associated with high spam volume`);
   }
@@ -317,7 +302,7 @@ export async function analyzeCall(metadata: CallMetadata): Promise<SpamAnalysisR
   }
 
   // Analyze phone number
-  const phoneAnalysis = analyzePhoneNumber(metadata.callerPhone);
+  const phoneAnalysis = analyzePhoneNumber(metadata.callerPhone, metadata.countryCode);
   totalScore += phoneAnalysis.score;
   allReasons.push(...phoneAnalysis.reasons);
 

@@ -1,19 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Check, Phone, Zap, Building2, Rocket } from "lucide-react";
+import { Check, Phone, Rocket } from "lucide-react";
+import { getCountryConfig } from "@/lib/country-config";
 
 interface GoLiveProps {
   data: {
     areaCode: string;
     selectedPlan: string;
   };
+  countryCode: string;
   onChange: (data: Partial<GoLiveProps["data"]>) => void;
 }
 
@@ -64,7 +64,24 @@ const plans = [
   },
 ];
 
-export function GoLive({ data, onChange }: GoLiveProps) {
+export function GoLive({ data, countryCode, onChange }: GoLiveProps) {
+  const config = getCountryConfig(countryCode);
+  const { areaCodeLength, countryCallingCode } = config.phone;
+  const suggestedAreaCodes = config.suggestedAreaCodes;
+
+  // Build phone preview using country-aware formatting
+  const buildPreview = () => {
+    const ac = data.areaCode || Array(areaCodeLength).fill("X").join("");
+    if (countryCode === "AU") {
+      // AU format: +61 X XXXX XXXX (area code is like "02", display digit is "2")
+      const displayAc = ac.startsWith("0") ? ac.slice(1) : ac;
+      return `+${countryCallingCode} ${displayAc} XXXX XXXX`;
+    }
+    // US format: +1 (XXX) XXX-XXXX
+    return `+${countryCallingCode} (${ac}) XXX-XXXX`;
+  };
+  const previewNumber = buildPreview();
+
   return (
     <div className="space-y-6">
       {/* Phone Number Selection */}
@@ -81,8 +98,8 @@ export function GoLive({ data, onChange }: GoLiveProps) {
             <Label htmlFor="areaCode">Area Code</Label>
             <Input
               id="areaCode"
-              placeholder="415"
-              maxLength={3}
+              placeholder={suggestedAreaCodes[0]?.code || ""}
+              maxLength={areaCodeLength}
               value={data.areaCode}
               onChange={(e) => onChange({ areaCode: e.target.value.replace(/\D/g, "") })}
             />
@@ -91,11 +108,33 @@ export function GoLive({ data, onChange }: GoLiveProps) {
             <div className="flex items-center gap-2 rounded-lg border bg-muted/50 p-3">
               <Phone className="h-5 w-5 text-muted-foreground" />
               <span className="text-muted-foreground">
-                +1 ({data.areaCode || "XXX"}) XXX-XXXX
+                {previewNumber}
               </span>
             </div>
           </div>
         </div>
+
+        {suggestedAreaCodes.length > 0 && (
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Suggested area codes:</Label>
+            <div className="flex flex-wrap gap-2">
+              {suggestedAreaCodes.map((ac) => (
+                <button
+                  key={ac.code}
+                  type="button"
+                  onClick={() => onChange({ areaCode: ac.code })}
+                  className={`rounded-full px-3 py-1 text-xs transition-colors ${
+                    data.areaCode === ac.code
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted hover:bg-muted/80"
+                  }`}
+                >
+                  {ac.code} ({ac.location})
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Plan Selection */}

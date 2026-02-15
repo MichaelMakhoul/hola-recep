@@ -12,9 +12,11 @@ import { AssistantSetup } from "./steps/AssistantSetup";
 import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2 } from "lucide-react";
+import { getCountryConfig } from "@/lib/country-config";
 
 interface OnboardingData {
   // Step 1: Business Info
+  country: string;
   businessName: string;
   industry: string;
   businessPhone: string;
@@ -33,6 +35,7 @@ interface OnboardingData {
 }
 
 const initialData: OnboardingData = {
+  country: "",
   businessName: "",
   industry: "",
   businessPhone: "",
@@ -99,7 +102,7 @@ export default function OnboardingPage() {
   const canProceed = () => {
     switch (currentStep) {
       case 1:
-        return data.businessName.trim() !== "" && data.industry !== "";
+        return data.country !== "" && data.businessName.trim() !== "" && data.industry !== "";
       case 2:
         return (
           data.assistantName.trim() !== "" &&
@@ -109,8 +112,11 @@ export default function OnboardingPage() {
         );
       case 3:
         return true; // Test call is optional
-      case 4:
-        return data.areaCode.length === 3 && data.selectedPlan !== "";
+      case 4: {
+        const countryConfig = data.country ? getCountryConfig(data.country) : null;
+        const requiredLen = countryConfig?.phone.areaCodeLength ?? 3;
+        return data.areaCode.length === requiredLen && data.selectedPlan !== "";
+      }
       default:
         return false;
     }
@@ -165,12 +171,15 @@ export default function OnboardingPage() {
 
       // Step 2: Update organization with additional business info
       // Note: Using type assertion due to Supabase SSR client type inference limitation
+      const countryConfig = data.country ? getCountryConfig(data.country) : null;
       const { error: updateOrgError } = await (supabase as any)
         .from("organizations")
         .update({
           industry: data.industry,
           business_phone: data.businessPhone || null,
           business_website: data.businessWebsite || null,
+          country: data.country || "US",
+          timezone: countryConfig?.defaultTimezone || "America/New_York",
         })
         .eq("id", orgId);
 
@@ -332,6 +341,7 @@ export default function OnboardingPage() {
               {currentStep === 1 && (
                 <BusinessInfo
                   data={{
+                    country: data.country,
                     businessName: data.businessName,
                     industry: data.industry,
                     businessPhone: data.businessPhone,
@@ -378,6 +388,7 @@ export default function OnboardingPage() {
                     areaCode: data.areaCode,
                     selectedPlan: data.selectedPlan,
                   }}
+                  countryCode={data.country || "US"}
                   onChange={(updates) => updateData(updates)}
                 />
               )}

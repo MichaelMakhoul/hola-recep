@@ -23,6 +23,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { Loader2, Building, Clock, Globe } from "lucide-react";
+import {
+  SUPPORTED_COUNTRIES,
+  getCountryConfig,
+  getTimezonesForCountry,
+} from "@/lib/country-config";
 
 const INDUSTRIES = [
   { value: "dental", label: "Dental Practice" },
@@ -31,16 +36,6 @@ const INDUSTRIES = [
   { value: "medical", label: "Medical Practice" },
   { value: "real_estate", label: "Real Estate" },
   { value: "other", label: "Other" },
-];
-
-const TIMEZONES = [
-  { value: "America/New_York", label: "Eastern Time (ET)" },
-  { value: "America/Chicago", label: "Central Time (CT)" },
-  { value: "America/Denver", label: "Mountain Time (MT)" },
-  { value: "America/Los_Angeles", label: "Pacific Time (PT)" },
-  { value: "America/Phoenix", label: "Arizona (No DST)" },
-  { value: "Pacific/Honolulu", label: "Hawaii Time" },
-  { value: "America/Anchorage", label: "Alaska Time" },
 ];
 
 const DAYS = [
@@ -60,6 +55,7 @@ interface BusinessHours {
 interface BusinessSettingsFormProps {
   organizationId: string;
   initialData: {
+    country: string;
     businessName: string;
     industry: string;
     websiteUrl: string;
@@ -75,6 +71,7 @@ export function BusinessSettingsForm({
   initialData,
 }: BusinessSettingsFormProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [country, setCountry] = useState(initialData.country);
   const [businessName, setBusinessName] = useState(initialData.businessName);
   const [industry, setIndustry] = useState(initialData.industry);
   const [websiteUrl, setWebsiteUrl] = useState(initialData.websiteUrl);
@@ -95,12 +92,26 @@ export function BusinessSettingsForm({
   const { toast } = useToast();
   const supabase = createClient();
 
+  const config = getCountryConfig(country);
+  const timezones = getTimezonesForCountry(country);
+
+  const handleCountryChange = (newCountry: string) => {
+    setCountry(newCountry);
+    const newConfig = getCountryConfig(newCountry);
+    // If current timezone isn't in the new country's list, switch to default
+    const tzValues = newConfig.timezones.map((t) => t.value);
+    if (!tzValues.includes(timezone)) {
+      setTimezone(newConfig.defaultTimezone);
+    }
+  };
+
   const handleSave = async () => {
     setIsLoading(true);
     try {
       const { error } = await (supabase as any)
         .from("organizations")
         .update({
+          country,
           business_name: businessName,
           name: businessName, // Keep name in sync
           industry,
@@ -160,6 +171,30 @@ export function BusinessSettingsForm({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Country */}
+        <div className="space-y-2">
+          <Label className="flex items-center gap-2">
+            <Globe className="h-4 w-4" />
+            Country
+          </Label>
+          <Select value={country} onValueChange={handleCountryChange}>
+            <SelectTrigger className="w-full md:w-[300px]">
+              <SelectValue placeholder="Select country" />
+            </SelectTrigger>
+            <SelectContent>
+              {SUPPORTED_COUNTRIES.map((c) => (
+                <SelectItem key={c.code} value={c.code}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Changing your country affects timezone options and new phone number
+            provisioning. Existing phone numbers will continue to work.
+          </p>
+        </div>
+
         {/* Basic Info */}
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
@@ -209,7 +244,7 @@ export function BusinessSettingsForm({
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="(555) 123-4567"
+              placeholder={config.phone.placeholder}
             />
           </div>
         </div>
@@ -229,7 +264,7 @@ export function BusinessSettingsForm({
         {/* Timezone */}
         <div className="space-y-2">
           <Label className="flex items-center gap-2">
-            <Globe className="h-4 w-4" />
+            <Clock className="h-4 w-4" />
             Timezone
           </Label>
           <Select value={timezone} onValueChange={setTimezone}>
@@ -237,7 +272,7 @@ export function BusinessSettingsForm({
               <SelectValue placeholder="Select timezone" />
             </SelectTrigger>
             <SelectContent>
-              {TIMEZONES.map((tz) => (
+              {timezones.map((tz) => (
                 <SelectItem key={tz.value} value={tz.value}>
                   {tz.label}
                 </SelectItem>

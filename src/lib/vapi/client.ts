@@ -295,17 +295,34 @@ export class VapiClient {
   ): Promise<{ number: string; locality?: string; region?: string; areaCode?: string }[]> {
     // Vapi doesn't have a search endpoint - return mock data showing available area codes
     // Users will specify area code when buying, and Vapi will provision a number
-    const areaCode = params.areaCode || "415";
+    const areaCode = params.areaCode || "";
 
     // Return placeholder showing the area code is available for Vapi SIP numbers
     return [
       {
-        number: `+1${areaCode}XXXXXXX`,
+        number: `+1${areaCode || "XXX"}XXXXXXX`,
         locality: "Available",
         region: params.country || "US",
         areaCode
       }
     ];
+  }
+
+  async importTwilioNumber(params: {
+    number: string;
+    twilioAccountSid: string;
+    twilioAuthToken: string;
+    assistantId?: string;
+    name?: string;
+  }): Promise<VapiPhoneNumber> {
+    return this.request<VapiPhoneNumber>("POST", "/phone-number", {
+      provider: "twilio",
+      number: params.number,
+      twilioAccountSid: params.twilioAccountSid,
+      twilioAuthToken: params.twilioAuthToken,
+      ...(params.assistantId && { assistantId: params.assistantId }),
+      ...(params.name && { name: params.name }),
+    });
   }
 
   async buyPhoneNumber(data: BuyPhoneNumberRequest): Promise<VapiPhoneNumber> {

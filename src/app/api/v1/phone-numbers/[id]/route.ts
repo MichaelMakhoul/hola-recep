@@ -12,6 +12,8 @@ interface Membership {
 const updatePhoneNumberSchema = z.object({
   assistantId: z.string().uuid().nullable().optional(),
   friendlyName: z.string().optional(),
+  forwardingStatus: z.enum(["pending_setup", "active", "paused"]).optional(),
+  carrier: z.string().optional(),
 });
 
 // GET /api/v1/phone-numbers/[id] - Get a single phone number
@@ -133,6 +135,12 @@ export async function PATCH(
     if (validatedData.friendlyName !== undefined) {
       updateData.friendly_name = validatedData.friendlyName;
     }
+    if (validatedData.forwardingStatus !== undefined) {
+      updateData.forwarding_status = validatedData.forwardingStatus;
+    }
+    if (validatedData.carrier !== undefined) {
+      updateData.carrier = validatedData.carrier;
+    }
 
     const { data: phoneNumber, error } = await (supabase
       .from("phone_numbers") as any)
@@ -189,20 +197,34 @@ export async function DELETE(
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    if (!["owner", "admin"].includes(membership.role!)) {
+    if (!membership.role || !["owner", "admin"].includes(membership.role)) {
       return NextResponse.json({ error: "Insufficient permissions" }, { status: 403 });
     }
 
     // Get phone number
     const { data: phoneNumber } = await (supabase
       .from("phone_numbers") as any)
-      .select("vapi_phone_number_id")
+      .select("vapi_phone_number_id, twilio_sid")
       .eq("id", id)
       .eq("organization_id", membership.organization_id)
       .single();
 
     if (!phoneNumber) {
       return NextResponse.json({ error: "Phone number not found" }, { status: 404 });
+    }
+
+    // Release from Twilio first (paid resource — must not orphan)
+    if (phoneNumber.twilio_sid) {
+      try {
+        const { releaseNumber } = await import("@/lib/twilio/client");
+        await releaseNumber(phoneNumber.twilio_sid);
+      } catch (e) {
+        console.error("Failed to release from Twilio:", e);
+        return NextResponse.json(
+          { error: "Failed to release number from Twilio. Please try again or contact support." },
+          { status: 502 }
+        );
+      }
     }
 
     // Delete from Vapi
@@ -212,10 +234,12 @@ export async function DELETE(
         await vapi.deletePhoneNumber(phoneNumber.vapi_phone_number_id);
       } catch (e) {
         console.error("Failed to delete from Vapi:", e);
+        // Twilio already released — Vapi deletion failure is non-critical
+        // since the paid Twilio resource is already freed
       }
     }
 
-    // Delete from database
+    // Delete from database only after external resources are cleaned up
     const { error } = await (supabase
       .from("phone_numbers") as any)
       .delete()
