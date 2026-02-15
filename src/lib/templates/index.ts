@@ -83,6 +83,22 @@ export const populateTemplate = (
   return { systemPrompt, firstMessage };
 };
 
+export const DEFAULT_RECORDING_DISCLOSURE =
+  'Thank you for calling {business_name}. You are speaking with an AI assistant and this call may be recorded for quality purposes. If you\'d prefer not to be recorded, just let me know and I can transfer you to a team member. By staying on the line, you consent to both.';
+
+export const RECORDING_DECLINE_SYSTEM_INSTRUCTION =
+  'IMPORTANT: If the caller says they do not want to be recorded or do not consent to recording, politely acknowledge their preference and offer to transfer them to a team member using the transfer_call tool. Do not pressure them to stay on the line.';
+
+export function buildFirstMessageWithDisclosure(
+  firstMessage: string,
+  disclosure: string | null | undefined,
+  businessName: string
+): string {
+  if (!disclosure) return firstMessage;
+  const populated = disclosure.replace(/{business_name}/g, businessName);
+  return `${populated} ${firstMessage}`;
+}
+
 export {
   dentalTemplate,
   legalTemplate,

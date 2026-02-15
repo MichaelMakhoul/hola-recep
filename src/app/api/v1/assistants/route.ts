@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
+import { DEFAULT_RECORDING_DISCLOSURE, RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
@@ -144,6 +145,24 @@ export async function POST(request: Request) {
       );
     }
 
+    // Resolve recording settings (default: on with standard disclosure)
+    const recordingEnabled = validatedData.settings?.recordingEnabled ?? true;
+    const recordingDisclosure = recordingEnabled
+      ? (validatedData.settings?.recordingDisclosure ?? DEFAULT_RECORDING_DISCLOSURE)
+      : null;
+
+    // Combine disclosure + greeting for Vapi's firstMessage
+    const vapiFirstMessage = buildFirstMessageWithDisclosure(
+      validatedData.firstMessage,
+      recordingDisclosure,
+      validatedData.name
+    );
+
+    // When recording is on, instruct the AI to handle opt-out requests
+    if (recordingEnabled) {
+      vapiSystemPrompt = `${vapiSystemPrompt}\n\n${RECORDING_DECLINE_SYSTEM_INSTRUCTION}`;
+    }
+
     // Create assistant in Vapi — reference calendar tools by ID via model.toolIds
     const vapi = getVapiClient();
     const vapiAssistant = await vapi.createAssistant({
@@ -158,14 +177,14 @@ export async function POST(request: Request) {
         provider: normalizeVoiceProvider(validatedData.voiceProvider),
         voiceId: validatedData.voiceId,
       },
-      firstMessage: validatedData.firstMessage,
+      firstMessage: vapiFirstMessage,
       transcriber: {
         provider: "deepgram",
         model: "nova-2",
         language: "en",
       },
       server: serverConfig,
-      recordingEnabled: true,
+      recordingEnabled,
       ...(analysisPlan && { analysisPlan }),
       metadata: {
         organizationId: membership.organization_id,
