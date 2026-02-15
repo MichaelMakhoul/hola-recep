@@ -97,17 +97,27 @@ function mapStatus(vapiStatus: string): string {
   return statusMap[vapiStatus] || "completed";
 }
 
-// Map endedReason to our call status
+// Map Vapi endedReason to our internal call status.
+// Unrecognized reasons are logged and default to "completed".
 function mapEndedReason(endedReason: string | undefined): string {
   switch (endedReason) {
     case "customer-ended-call":
     case "assistant-ended-call":
+    case "customer-ended":
+    case "assistant-ended":
       return "completed";
     case "no-answer":
       return "no-answer";
     case "busy":
       return "busy";
+    case "silence-timed-out":
+    case "pipeline-error-openai-llm-failed":
+    case "assistant-error":
+      return "failed";
+    case undefined:
+      return "completed";
     default:
+      console.warn("Unrecognized endedReason, defaulting to completed:", endedReason);
       return "completed";
   }
 }
@@ -141,11 +151,19 @@ async function resolveCallContext(
 
   let assistantId = phoneNumber.assistant_id;
   if (call.assistantId) {
-    const { data: assistant } = await (supabase
+    const { data: assistant, error: assistantError } = await (supabase
       .from("assistants") as any)
       .select("id")
       .eq("vapi_assistant_id", call.assistantId)
       .single();
+
+    if (assistantError && assistantError.code !== "PGRST116") {
+      console.error("Failed to look up assistant:", {
+        vapiCallId: call.id,
+        vapiAssistantId: call.assistantId,
+        error: assistantError,
+      });
+    }
     if (assistant) assistantId = assistant.id;
   }
 
@@ -205,11 +223,18 @@ export async function POST(request: Request) {
           }
 
           // Check if call record already exists, create if not
-          const { data: existingCall } = await (supabase
+          const { data: existingCall, error: lookupErr } = await (supabase
             .from("calls") as any)
             .select("id")
             .eq("vapi_call_id", call.id)
             .single();
+
+          if (lookupErr && lookupErr.code !== "PGRST116") {
+            console.error("Failed to check for existing call record:", {
+              vapiCallId: call.id,
+              error: lookupErr,
+            });
+          }
 
           if (!existingCall) {
             const { error: insertError } = await (supabase.from("calls") as any).insert({
@@ -321,6 +346,10 @@ export async function POST(request: Request) {
               vapiCallId: call.id,
               vapiPhoneNumberId: call.phoneNumberId,
             });
+            return NextResponse.json(
+              { error: "Phone number not found" },
+              { status: 500 }
+            );
           } else {
             const { data: newCall, error: insertError } = await (supabase.from("calls") as any)
               .insert({
@@ -429,6 +458,12 @@ export async function POST(request: Request) {
 
         if (shouldTrackUsage && existingCall) {
           const { success, shouldUpgrade } = await incrementCallUsage(existingCall.organization_id);
+          if (!success) {
+            console.error("Failed to increment call usage:", {
+              organizationId: existingCall.organization_id,
+              vapiCallId: call.id,
+            });
+          }
           if (shouldUpgrade) {
             console.log(`Organization ${existingCall.organization_id} approaching call limit`);
           }

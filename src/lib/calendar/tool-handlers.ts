@@ -179,17 +179,29 @@ async function getBuiltInAvailability(
     end_time: string | null;
   }[];
 
-  // Filter out slots that overlap with existing appointments
+  // Filter out slots that overlap with existing appointments.
+  // Compare in org-local minutes-since-midnight to avoid server-TZ vs org-TZ mismatch.
+  const { timezone } = resolvedSchedule;
+
   return slots.filter((slotIso) => {
-    const slotStart = new Date(slotIso).getTime();
-    const slotEnd = slotStart + SLOT_DURATION_MINUTES * 60_000;
+    const [, timeStr] = slotIso.split("T");
+    const [slotH, slotM] = timeStr.split(":").map(Number);
+    const slotStartMin = slotH * 60 + slotM;
+    const slotEndMin = slotStartMin + SLOT_DURATION_MINUTES;
 
     return !appointments.some((appt) => {
-      const apptStart = new Date(appt.start_time).getTime();
-      const apptEnd = appt.end_time
-        ? new Date(appt.end_time).getTime()
-        : apptStart + (appt.duration_minutes || SLOT_DURATION_MINUTES) * 60_000;
-      return slotStart < apptEnd && slotEnd > apptStart;
+      const { h: aH, m: aM } = getTimeInTimezone(new Date(appt.start_time), timezone);
+      const apptStartMin = aH * 60 + aM;
+
+      let apptEndMin: number;
+      if (appt.end_time) {
+        const { h: eH, m: eM } = getTimeInTimezone(new Date(appt.end_time), timezone);
+        apptEndMin = eH * 60 + eM;
+      } else {
+        apptEndMin = apptStartMin + (appt.duration_minutes || SLOT_DURATION_MINUTES);
+      }
+
+      return slotStartMin < apptEndMin && slotEndMin > apptStartMin;
     });
   });
 }
@@ -326,6 +338,13 @@ export async function handleCheckAvailability(
     };
   }
 
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return {
+      success: false,
+      message: "I need the date in a standard format. Could you say the date again?",
+    };
+  }
+
   // ── Try Cal.com first ─────────────────────────────────────────────────
   const calClient = await getCalComClient(organizationId);
 
@@ -406,13 +425,18 @@ export async function handleCancelAppointment(
           reason || "Cancelled by caller"
         );
       } else {
-        console.warn("Cannot cancel Cal.com booking: missing client or booking ID", {
+        console.error("Cannot cancel Cal.com booking: missing client or booking ID", {
           organizationId,
           appointmentId: appointment.id,
           externalId: appointment.external_id,
           hasCalClient: !!calClient,
           hasBookingId: !!appointment.metadata?.calComBookingId,
         });
+        return {
+          success: false,
+          message:
+            "I'm having trouble cancelling the external calendar booking. Let me have someone follow up with you to make sure this is fully cancelled.",
+        };
       }
     }
 
@@ -464,13 +488,22 @@ async function bookViaCal(
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
-  const { data: integration } = await (supabase as any)
+  const { data: integration, error: integrationError } = await (supabase as any)
     .from("calendar_integrations")
     .select("calendar_id, settings")
     .eq("organization_id", organizationId)
     .eq("provider", "cal_com")
     .eq("is_active", true)
     .single();
+
+  if (integrationError && integrationError.code !== "PGRST116") {
+    console.error("Failed to fetch calendar integration:", { organizationId, error: integrationError });
+    return {
+      success: false,
+      message:
+        "I'm having trouble accessing the calendar system right now. Would you like me to take your information instead?",
+    };
+  }
 
   if (!integration || !integration.calendar_id) {
     return {
@@ -580,13 +613,21 @@ async function checkAvailabilityViaCal(
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
-  const { data: integration } = await (supabase as any)
+  const { data: integration, error: integrationError } = await (supabase as any)
     .from("calendar_integrations")
     .select("calendar_id")
     .eq("organization_id", organizationId)
     .eq("provider", "cal_com")
     .eq("is_active", true)
     .single();
+
+  if (integrationError && integrationError.code !== "PGRST116") {
+    console.error("Failed to fetch calendar integration:", { organizationId, error: integrationError });
+    return {
+      success: false,
+      message: "I'm having trouble accessing the calendar right now. Would you like me to take your information instead?",
+    };
+  }
 
   if (!integration || !integration.calendar_id) {
     return {
@@ -651,7 +692,8 @@ async function bookInternal(
   let schedule: OrgSchedule | null;
   try {
     schedule = await getOrgSchedule(organizationId);
-  } catch {
+  } catch (error) {
+    console.error("Failed to get org schedule for booking:", { organizationId, error });
     return {
       success: false,
       message:
