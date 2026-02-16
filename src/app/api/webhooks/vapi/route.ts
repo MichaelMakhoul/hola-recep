@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import crypto from "crypto";
 import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
-import { sendMissedCallNotification, sendVoicemailNotification } from "@/lib/notifications/notification-service";
+import { sendMissedCallNotification, sendVoicemailNotification, sendFailedCallNotification } from "@/lib/notifications/notification-service";
 import { incrementCallUsage, canMakeCall } from "@/lib/stripe/billing-service";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import {
@@ -120,6 +120,28 @@ function mapEndedReason(endedReason: string | undefined): string {
     default:
       console.warn("Unrecognized endedReason, defaulting to completed:", endedReason);
       return "completed";
+  }
+}
+
+// Human-readable failure reasons for notification emails
+function humanizeEndedReason(endedReason: string | undefined): string {
+  switch (endedReason) {
+    case "pipeline-error-openai-llm-failed":
+      return "The AI assistant encountered a technical error and couldn't respond.";
+    case "assistant-error":
+      return "The AI assistant had an internal error during the call.";
+    case "silence-timed-out":
+      return "The call was disconnected due to prolonged silence.";
+    case "pipeline-error-openai-voice-failed":
+      return "The voice system failed during the call.";
+    case "pipeline-error-deepgram-transcriber-failed":
+      return "The speech recognition system failed during the call.";
+    case "server-error":
+      return "Our server encountered an error processing the call.";
+    default:
+      return endedReason
+        ? `The call ended unexpectedly (${endedReason}).`
+        : "The call ended unexpectedly for an unknown reason.";
   }
 }
 
@@ -479,8 +501,20 @@ export async function POST(request: Request) {
 
         // Send notifications based on call outcome (skip for spam)
         if (existingCall && !spamAnalysis?.isSpam) {
-          if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
-            await sendMissedCallNotification({
+          if (callStatus === "failed") {
+            sendFailedCallNotification({
+              organizationId: existingCall.organization_id,
+              callId: existingCall.id,
+              callerPhone: call.customer?.number || "Unknown",
+              callerName: callerName ?? undefined,
+              timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+              duration: durationSeconds ?? undefined,
+              summary: summary ?? undefined,
+              failureReason: humanizeEndedReason(endedReason),
+              endedReason: endedReason ?? undefined,
+            }).catch((err) => console.error("Failed to send failed call notification:", err));
+          } else if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
+            sendMissedCallNotification({
               organizationId: existingCall.organization_id,
               callId: existingCall.id,
               callerPhone: call.customer?.number || "Unknown",
@@ -492,7 +526,7 @@ export async function POST(request: Request) {
 
           // Heuristic: recordings between 10-120 seconds are likely voicemails
           if (recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10) {
-            await sendVoicemailNotification({
+            sendVoicemailNotification({
               organizationId: existingCall.organization_id,
               callId: existingCall.id,
               callerPhone: call.customer?.number || "Unknown",

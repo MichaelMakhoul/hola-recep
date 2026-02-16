@@ -3,6 +3,7 @@
  *
  * Handles sending email and SMS notifications for various events:
  * - Missed calls
+ * - Failed calls
  * - Voicemails
  * - Appointment bookings
  * - Daily summaries
@@ -10,14 +11,18 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isUrlAllowed, escapeHtml } from "@/lib/security/validation";
+import { Resend } from "resend";
+import Twilio from "twilio";
 
 export interface NotificationPreferences {
   email_on_missed_call: boolean;
   email_on_voicemail: boolean;
   email_on_appointment_booked: boolean;
+  email_on_failed_call: boolean;
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
+  sms_on_failed_call: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
 }
@@ -38,6 +43,11 @@ export interface CallNotificationData {
 export interface VoicemailNotificationData extends CallNotificationData {
   voicemailUrl: string;
   voicemailTranscript?: string;
+}
+
+export interface FailedCallNotificationData extends CallNotificationData {
+  failureReason: string;
+  endedReason?: string;
 }
 
 export interface AppointmentNotificationData {
@@ -82,9 +92,11 @@ export async function getNotificationPreferences(
     email_on_missed_call: data.email_on_missed_call ?? true,
     email_on_voicemail: data.email_on_voicemail ?? true,
     email_on_appointment_booked: data.email_on_appointment_booked ?? true,
+    email_on_failed_call: data.email_on_failed_call ?? true,
     email_daily_summary: data.email_daily_summary ?? true,
     sms_on_missed_call: data.sms_on_missed_call ?? false,
     sms_on_voicemail: data.sms_on_voicemail ?? false,
+    sms_on_failed_call: data.sms_on_failed_call ?? false,
     sms_phone_number: data.sms_phone_number,
     webhook_url: data.webhook_url,
   };
@@ -162,6 +174,53 @@ export async function sendMissedCallNotification(
   if (prefs.webhook_url) {
     await sendWebhook(prefs.webhook_url, {
       event: "missed_call",
+      data,
+    });
+  }
+}
+
+/**
+ * Send failed call notification — alerts business owner when a call fails
+ * so they can call the customer back.
+ */
+export async function sendFailedCallNotification(
+  data: FailedCallNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  // Failed calls always notify even without prefs — default to email-on
+  const shouldEmail = prefs ? prefs.email_on_failed_call : true;
+  const shouldSms = prefs ? prefs.sms_on_failed_call && prefs.sms_phone_number : false;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  if (shouldEmail && email) {
+    await sendEmail({
+      to: email,
+      subject: `Failed Call — Action Required`,
+      template: "failed-call",
+      data: {
+        callerPhone: data.callerPhone,
+        callerName: data.callerName,
+        timestamp: data.timestamp.toLocaleString(),
+        failureReason: data.failureReason,
+        endedReason: data.endedReason,
+        summary: data.summary,
+        duration: data.duration,
+      },
+    });
+  }
+
+  if (shouldSms && prefs?.sms_phone_number) {
+    const caller = data.callerName || data.callerPhone;
+    await sendSMS({
+      to: prefs.sms_phone_number,
+      message: `[Hola Recep] Failed call from ${caller} at ${data.timestamp.toLocaleTimeString()}. Please call them back. Reason: ${data.failureReason}`,
+    });
+  }
+
+  if (prefs?.webhook_url) {
+    await sendWebhook(prefs.webhook_url, {
+      event: "call_failed",
       data,
     });
   }
@@ -309,13 +368,11 @@ interface WebhookPayload {
 }
 
 /**
- * Send email using configured email provider
- * TODO: Integrate with actual email provider (Resend, SendGrid, etc.)
+ * Send email using Resend
  */
 async function sendEmail(params: EmailParams): Promise<boolean> {
   const { to, subject, template, data } = params;
 
-  // Check if email is configured
   const apiKey = process.env.EMAIL_API_KEY;
   const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
 
@@ -329,20 +386,22 @@ async function sendEmail(params: EmailParams): Promise<boolean> {
   }
 
   try {
-    // Generate email HTML from template
     const html = generateEmailHtml(template, data);
+    const resend = new Resend(apiKey);
 
-    // TODO: Replace with actual email provider integration
-    // Example with Resend:
-    // const resend = new Resend(apiKey);
-    // await resend.emails.send({
-    //   from: fromEmail,
-    //   to,
-    //   subject,
-    //   html,
-    // });
+    const { error } = await resend.emails.send({
+      from: fromEmail,
+      to,
+      subject,
+      html,
+    });
 
-    console.log("[Email] Would send email:", { to, subject, template });
+    if (error) {
+      console.error("[Email] Resend error:", error);
+      return false;
+    }
+
+    console.log("[Email] Sent:", { to, subject, template });
     return true;
   } catch (error) {
     console.error("[Email] Failed to send email:", error);
@@ -351,13 +410,11 @@ async function sendEmail(params: EmailParams): Promise<boolean> {
 }
 
 /**
- * Send SMS using configured SMS provider
- * TODO: Integrate with actual SMS provider (Twilio, etc.)
+ * Send SMS using Twilio
  */
 async function sendSMS(params: SMSParams): Promise<boolean> {
   const { to, message } = params;
 
-  // Check if SMS is configured
   const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
   const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
   const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
@@ -368,15 +425,14 @@ async function sendSMS(params: SMSParams): Promise<boolean> {
   }
 
   try {
-    // TODO: Replace with actual Twilio integration
-    // const client = twilio(twilioAccountSid, twilioAuthToken);
-    // await client.messages.create({
-    //   body: message,
-    //   to,
-    //   from: twilioFromNumber,
-    // });
+    const client = Twilio(twilioAccountSid, twilioAuthToken);
+    await client.messages.create({
+      body: message,
+      to,
+      from: twilioFromNumber,
+    });
 
-    console.log("[SMS] Would send SMS:", { to, message: message.substring(0, 50) });
+    console.log("[SMS] Sent:", { to, message: message.substring(0, 50) });
     return true;
   } catch (error) {
     console.error("[SMS] Failed to send SMS:", error);
@@ -442,6 +498,27 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <p>You missed a call from <strong>${d.callerName || d.callerPhone}</strong> at ${d.timestamp}.</p>
       ${d.summary ? `<p><em>Summary: ${d.summary}</em></p>` : ""}
       <p>Log in to your dashboard to see more details.</p>
+    `,
+    "failed-call": (d) => `
+      <h2 style="color: #dc2626;">Failed Call — Action Required</h2>
+      <p>A caller tried to reach your business but the call failed.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Caller</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.callerName ? `${d.callerName} (${d.callerPhone})` : d.callerPhone}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Time</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.timestamp}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Reason</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.failureReason}</td>
+        </tr>
+        ${d.duration ? `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Duration</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.duration}s</td></tr>` : ""}
+        ${d.summary ? `<tr><td style="padding: 8px; font-weight: bold;">Summary</td><td style="padding: 8px;">${d.summary}</td></tr>` : ""}
+      </table>
+      <p><strong>Please call them back as soon as possible.</strong></p>
     `,
     voicemail: (d) => `
       <h2>New Voicemail</h2>

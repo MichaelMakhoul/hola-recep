@@ -128,7 +128,7 @@ export async function incrementCallUsage(
   );
 
   // If the RPC doesn't exist, fall back to regular update (with race condition warning)
-  if (error && error.code === "42883") {
+  if (error && (error.code === "42883" || error.code === "PGRST202")) {
     // Function doesn't exist, use fallback
     const { data: subscription } = await (supabase as any)
       .from("subscriptions")
