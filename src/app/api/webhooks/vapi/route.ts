@@ -10,6 +10,7 @@ import {
   handleCheckAvailability,
   handleCancelAppointment,
 } from "@/lib/calendar/tool-handlers";
+import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 
 // Verify Vapi webhook using custom header secret
 // Vapi sends the secret via the x-webhook-secret header (configured in server.headers)
@@ -271,6 +272,13 @@ export async function POST(request: Request) {
               });
             }
           }
+
+          // Fire call.started webhook
+          deliverWebhooks(phoneNumber.organization_id, "call.started", {
+            callId: existingCall?.id || call.id,
+            caller: call.customer?.number || "Unknown",
+            outcome: "in-progress",
+          }).catch((err) => console.error("[Webhooks] Failed to deliver call.started:", err));
         } else {
           // Other status updates (queued, ringing, forwarding, ended)
           const { error: statusError } = await (supabase
@@ -494,6 +502,47 @@ export async function POST(request: Request) {
               voicemailTranscript: transcript ?? undefined,
             }).catch((err) => console.error("Failed to send voicemail notification:", err));
           }
+        }
+
+        // Fire-and-forget webhook delivery to user integrations
+        if (existingCall) {
+          // Look up assistant name for the payload
+          let assistantName: string | null = null;
+          if (existingCall.organization_id) {
+            const { data: assistantRecord, error: assistantLookupError } = await (supabase.from("assistants") as any)
+              .select("name")
+              .eq("vapi_assistant_id", call.assistantId)
+              .single();
+            if (assistantLookupError && assistantLookupError.code !== "PGRST116") {
+              console.error("Failed to look up assistant name for webhook:", assistantLookupError);
+            }
+            if (assistantRecord) assistantName = assistantRecord.name;
+          }
+
+          // Determine correct webhook event based on call outcome
+          const isVoicemail = recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10;
+          const isMissed = callStatus === "no-answer" || callStatus === "busy";
+
+          type WebhookEvent = "call.completed" | "call.missed" | "voicemail.received";
+          let webhookEvent: WebhookEvent = "call.completed";
+          if (isVoicemail) {
+            webhookEvent = "voicemail.received";
+          } else if (isMissed) {
+            webhookEvent = "call.missed";
+          }
+
+          deliverWebhooks(existingCall.organization_id, webhookEvent, {
+            callId: existingCall.id,
+            caller: call.customer?.number || "Unknown",
+            callerName: callerName ?? undefined,
+            summary: summary ?? undefined,
+            transcript: transcript ?? undefined,
+            duration: durationSeconds ?? undefined,
+            assistantName,
+            outcome: callStatus,
+            recordingUrl: recordingUrl ?? undefined,
+            collectedData: collectedData as Record<string, unknown> | undefined,
+          }).catch((err) => console.error("[Webhooks] Failed to deliver webhooks:", err));
         }
 
         break;

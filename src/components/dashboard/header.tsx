@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bell, LogOut, Settings, User } from "lucide-react";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { LogOut, Menu, User, CreditCard } from "lucide-react";
+import { NotificationBell } from "@/components/dashboard/notification-bell";
+import { SidebarContent } from "@/components/dashboard/sidebar";
 
 interface DashboardHeaderProps {
   user: {
@@ -25,12 +29,14 @@ interface DashboardHeaderProps {
     id: string;
     name: string;
     slug: string;
+    type?: string;
   } | null;
 }
 
 export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
   const router = useRouter();
   const supabase = createClient();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleSignOut = async () => {
     await supabase.auth.signOut();
@@ -48,17 +54,23 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
     : user.email[0].toUpperCase();
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-card px-6">
-      <div>
-        {/* Breadcrumb or page title can go here */}
+    <header className="flex h-16 items-center justify-between border-b bg-card px-4 md:px-6">
+      <div className="flex items-center gap-2">
+        {/* Mobile hamburger */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="md:hidden"
+          onClick={() => setMobileOpen(true)}
+        >
+          <Menu className="h-5 w-5" />
+          <span className="sr-only">Open menu</span>
+        </Button>
       </div>
 
       <div className="flex items-center gap-4">
         {/* Notifications */}
-        <Button variant="ghost" size="icon" className="relative">
-          <Bell className="h-5 w-5" />
-          <span className="sr-only">Notifications</span>
-        </Button>
+        {organization && <NotificationBell organizationId={organization.id} />}
 
         {/* User menu */}
         <DropdownMenu>
@@ -86,9 +98,9 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
               <User className="mr-2 h-4 w-4" />
               Profile
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => router.push("/settings")}>
-              <Settings className="mr-2 h-4 w-4" />
-              Settings
+            <DropdownMenuItem onClick={() => router.push("/billing")}>
+              <CreditCard className="mr-2 h-4 w-4" />
+              Billing
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleSignOut} className="text-destructive">
@@ -98,6 +110,23 @@ export function DashboardHeader({ user, organization }: DashboardHeaderProps) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {/* Mobile sidebar sheet */}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="left" className="w-64 p-0" onClick={(e) => {
+          // Close sheet when clicking a nav link
+          if ((e.target as HTMLElement).closest("a")) {
+            setMobileOpen(false);
+          }
+        }}>
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <div className="flex h-full flex-col">
+            <SidebarContent
+              currentOrg={organization ? { name: organization.name, type: organization.type || "business" } : undefined}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
     </header>
   );
 }

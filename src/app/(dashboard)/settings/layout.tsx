@@ -1,5 +1,3 @@
-import { SettingsNav } from "./settings-nav";
-
 export default function SettingsLayout({
   children,
 }: {
@@ -14,10 +12,7 @@ export default function SettingsLayout({
         </p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-4">
-        <SettingsNav />
-        <div className="space-y-6 lg:col-span-3">{children}</div>
-      </div>
+      {children}
     </div>
   );
 }
