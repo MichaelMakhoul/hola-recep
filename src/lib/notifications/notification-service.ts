@@ -427,12 +427,9 @@ async function sendEmail(params: EmailParams): Promise<void> {
   const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
 
   if (!apiKey) {
-    console.warn("[Email] No API key configured, skipping email:", {
-      to,
-      subject,
-      template,
-    });
-    return;
+    throw new Error(
+      `[Email] EMAIL_API_KEY is not configured. Cannot send "${template}" email to ${to} (subject: "${subject}")`
+    );
   }
 
   const html = generateEmailHtml(template, data);
@@ -466,8 +463,9 @@ async function sendSMS(params: SMSParams): Promise<void> {
   const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
 
   if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
-    console.warn("[SMS] Twilio not configured, skipping SMS:", { to });
-    return;
+    throw new Error(
+      `[SMS] Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER). Cannot send SMS to ${to}`
+    );
   }
 
   const client = Twilio(twilioAccountSid, twilioAuthToken);
