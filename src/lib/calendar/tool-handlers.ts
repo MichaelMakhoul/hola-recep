@@ -302,10 +302,15 @@ function ensureTimezoneOffset(datetime: string, timezone: string): string {
   const utcMin = parseInt(getPart(utcParts, "minute"), 10);
   const utcDay = parseInt(getPart(utcParts, "day"), 10);
 
-  let offsetMinutes = (tzHour * 60 + tzMin) - (utcHour * 60 + utcMin);
-  // Adjust for day boundary crossing
-  if (tzDay > utcDay) offsetMinutes += 24 * 60;
-  else if (tzDay < utcDay) offsetMinutes -= 24 * 60;
+  // Compare full date representations to handle month/year boundaries correctly
+  const tzMonth = parseInt(getPart(tzParts, "month"), 10);
+  const utcMonth = parseInt(getPart(utcParts, "month"), 10);
+  const tzYear = parseInt(getPart(tzParts, "year"), 10);
+  const utcYear = parseInt(getPart(utcParts, "year"), 10);
+
+  const tzTotal = new Date(tzYear, tzMonth - 1, tzDay, tzHour, tzMin).getTime();
+  const utcTotal = new Date(utcYear, utcMonth - 1, utcDay, utcHour, utcMin).getTime();
+  const offsetMinutes = (tzTotal - utcTotal) / 60_000;
 
   const sign = offsetMinutes >= 0 ? "+" : "-";
   const absOffset = Math.abs(offsetMinutes);
@@ -324,8 +329,11 @@ export async function handleGetCurrentDatetime(
   try {
     const schedule = await getOrgSchedule(organizationId);
     if (schedule?.timezone) timezone = schedule.timezone;
-  } catch {
-    // fall back to default
+  } catch (error) {
+    console.error("Failed to fetch org timezone for get_current_datetime, falling back to America/New_York:", {
+      organizationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const now = new Date();

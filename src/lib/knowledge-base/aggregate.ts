@@ -1,5 +1,5 @@
 import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
-import { buildPromptFromConfig } from "@/lib/prompt-builder";
+import { buildPromptFromConfig, buildSchedulingSection } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -89,13 +89,17 @@ export async function resyncOrgAssistants(
 ): Promise<void> {
   const aggregatedKB = await getAggregatedKnowledgeBase(supabase, organizationId);
 
-  // Fetch org timezone for prompt context
-  const { data: orgRow } = await (supabase as any)
+  // Fetch org timezone and business hours for prompt context
+  const { data: orgRow, error: orgError } = await (supabase as any)
     .from("organizations")
-    .select("timezone")
+    .select("timezone, business_hours")
     .eq("id", organizationId)
     .single();
+  if (orgError) {
+    console.error("Failed to fetch org timezone/business_hours for resync:", { organizationId, error: orgError });
+  }
   const orgTimezone: string | undefined = orgRow?.timezone || undefined;
+  const orgBusinessHours = orgRow?.business_hours || undefined;
 
   const { data: assistants, error } = await (supabase as any)
     .from("assistants")
@@ -134,6 +138,7 @@ export async function resyncOrgAssistants(
         industry,
         knowledgeBase: aggregatedKB || undefined,
         timezone: orgTimezone,
+        businessHours: orgBusinessHours,
       });
     } else {
       // Legacy prompt — replace placeholder or append
@@ -147,10 +152,8 @@ export async function resyncOrgAssistants(
       } else {
         systemPrompt = assistant.system_prompt;
       }
-      // For legacy prompts, append timezone scheduling instruction
-      if (orgTimezone) {
-        systemPrompt += `\n\nTIMEZONE & SCHEDULING:\nThe business is in the ${orgTimezone} timezone.\nIMPORTANT: Before interpreting ANY relative date or time reference (such as "today", "tomorrow", "next week", etc.), you MUST call the get_current_datetime tool first. Never guess or assume the current date.`;
-      }
+      // For legacy prompts, append scheduling context
+      systemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours)}`;
     }
 
     try {

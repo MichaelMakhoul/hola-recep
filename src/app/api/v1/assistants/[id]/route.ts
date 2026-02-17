@@ -175,11 +175,17 @@ export async function PATCH(
           : currentAssistant.prompt_config;
 
         // Fetch org timezone and business hours for prompt context
-        const { data: orgRow } = await (supabase as any)
+        const { data: orgRow, error: orgError } = await (supabase as any)
           .from("organizations")
           .select("timezone, business_hours")
           .eq("id", membership.organization_id)
           .single();
+        if (orgError) {
+          console.error("Failed to fetch org timezone/business_hours for assistant update:", {
+            organizationId: membership.organization_id,
+            error: orgError,
+          });
+        }
         const orgTimezone: string | undefined = orgRow?.timezone || undefined;
         const orgBusinessHours = orgRow?.business_hours || undefined;
 
