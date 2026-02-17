@@ -12,6 +12,7 @@ import {
   handleGetCurrentDatetime,
 } from "@/lib/calendar/tool-handlers";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
+import { getVapiClient, type VapiCall as VapiCallType } from "@/lib/vapi";
 
 // Verify Vapi webhook using custom header secret
 // Vapi sends the secret via the x-webhook-secret header (configured in server.headers)
@@ -345,13 +346,32 @@ export async function POST(request: Request) {
         const call = event.message.call;
         if (!call) break;
 
-        // Calculate duration
+        // Vapi's end-of-call-report webhook often omits startedAt/endedAt and
+        // analysis data. Fetch the full call from the API as a fallback.
+        let vapiCallData: VapiCallType | null = null;
+        if (!call.startedAt || !call.endedAt || !call.analysis) {
+          try {
+            vapiCallData = await getVapiClient().getCall(call.id);
+          } catch (err) {
+            console.error("Failed to fetch call from Vapi API (fallback):", {
+              vapiCallId: call.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        // Calculate duration — prefer webhook data, fall back to API data
         let durationSeconds: number | null = null;
-        if (call.startedAt && call.endedAt) {
-          const start = new Date(call.startedAt).getTime();
-          const end = new Date(call.endedAt).getTime();
+        const startedAt = call.startedAt || vapiCallData?.startedAt;
+        const endedAt = call.endedAt || vapiCallData?.endedAt;
+        if (startedAt && endedAt) {
+          const start = new Date(startedAt).getTime();
+          const end = new Date(endedAt).getTime();
           durationSeconds = Math.round((end - start) / 1000);
         }
+
+        // Merge analysis from webhook and API fallback
+        const analysis = call.analysis || vapiCallData?.analysis || null;
 
         // Get transcript and summary from various places in the event
         const transcript =
@@ -361,7 +381,7 @@ export async function POST(request: Request) {
         const summary =
           call.summary ||
           event.message.artifact?.summary ||
-          call.analysis?.summary ||
+          analysis?.summary ||
           event.message.analysis?.summary;
         const recordingUrl =
           call.recordingUrl || event.message.artifact?.recordingUrl;
@@ -429,7 +449,7 @@ export async function POST(request: Request) {
           const spamMetadata: CallMetadata = {
             callerPhone: call.customer.number,
             organizationId: existingCall.organization_id,
-            timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+            timestamp: startedAt ? new Date(startedAt) : new Date(),
             duration: durationSeconds ?? undefined,
             transcript: transcript ?? undefined,
           };
@@ -449,9 +469,9 @@ export async function POST(request: Request) {
 
         const callStatus = mapEndedReason(endedReason);
 
-        // Extract structured caller data from Vapi analysis
-        const collectedData = call.analysis?.structuredData ?? null;
-        const successEvaluation = call.analysis?.successEvaluation ?? null;
+        // Extract structured caller data from Vapi analysis (uses merged analysis)
+        const collectedData = analysis?.structuredData ?? null;
+        const successEvaluation = analysis?.successEvaluation ?? null;
 
         // Extract caller_name from structured data if available
         const callerName =
@@ -464,7 +484,7 @@ export async function POST(request: Request) {
           .from("calls") as any)
           .update({
             status: callStatus,
-            ended_at: call.endedAt,
+            ended_at: endedAt,
             duration_seconds: durationSeconds,
             transcript,
             recording_url: recordingUrl,
@@ -476,7 +496,7 @@ export async function POST(request: Request) {
             ...(callerName && { caller_name: callerName }),
             metadata: {
               endedReason,
-              analysis: call.analysis,
+              analysis,
               successEvaluation,
               spamAnalysis: spamAnalysis ? {
                 reasons: spamAnalysis.reasons,
@@ -520,7 +540,7 @@ export async function POST(request: Request) {
                 callId: existingCall.id,
                 callerPhone: call.customer?.number || "Unknown",
                 callerName: callerName ?? undefined,
-                timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+                timestamp: startedAt ? new Date(startedAt) : new Date(),
                 duration: durationSeconds ?? undefined,
                 summary: summary ?? undefined,
                 failureReason: humanizeEndedReason(endedReason),
@@ -531,7 +551,7 @@ export async function POST(request: Request) {
                 organizationId: existingCall.organization_id,
                 callId: existingCall.id,
                 callerPhone: call.customer?.number || "Unknown",
-                timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+                timestamp: startedAt ? new Date(startedAt) : new Date(),
                 duration: durationSeconds ?? undefined,
                 summary: summary ?? undefined,
               });
@@ -540,7 +560,7 @@ export async function POST(request: Request) {
                 organizationId: existingCall.organization_id,
                 callId: existingCall.id,
                 callerPhone: call.customer?.number || "Unknown",
-                timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+                timestamp: startedAt ? new Date(startedAt) : new Date(),
                 duration: durationSeconds!,
                 voicemailUrl: recordingUrl!,
                 voicemailTranscript: transcript ?? undefined,

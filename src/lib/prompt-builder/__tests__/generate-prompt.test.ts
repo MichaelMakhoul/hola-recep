@@ -178,7 +178,8 @@ describe("generate-prompt", () => {
     it("should not include disabled capabilities", () => {
       const config = getDefaultConfig("other"); // only takeMessages is on
       const prompt = buildPromptFromConfig(config, baseContext);
-      expect(prompt).not.toContain("SCHEDULING:");
+      // "- SCHEDULING:" is the behavior toggle; "TIMEZONE & SCHEDULING:" is always present
+      expect(prompt).not.toContain("- SCHEDULING:");
       expect(prompt).not.toContain("EMERGENCIES:");
       expect(prompt).not.toContain("PRICING:");
       expect(prompt).not.toContain("TRANSFERS:");

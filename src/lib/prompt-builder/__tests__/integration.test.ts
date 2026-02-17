@@ -44,7 +44,7 @@ describe("prompt-builder integration", () => {
       expect(prompt).toContain("Matter Description"); // legal field
       expect(prompt).toContain("MESSAGES:"); // takeMessages
       expect(prompt).toContain("TRANSFERS:"); // transferToHuman
-      expect(prompt).not.toContain("SCHEDULING:"); // disabled for legal
+      expect(prompt).not.toContain("- SCHEDULING:"); // scheduling behavior disabled for legal
       expect(prompt).toContain("attorney-client confidentiality");
     });
 
@@ -145,12 +145,15 @@ describe("prompt-builder integration", () => {
       });
 
       expect(prompt).toContain("CAPABILITIES:");
-      expect(prompt).not.toContain("SCHEDULING:");
+      // "- SCHEDULING:" is the behavior toggle; "TIMEZONE & SCHEDULING:" is always present
+      expect(prompt).not.toContain("- SCHEDULING:");
       expect(prompt).not.toContain("EMERGENCIES:");
       expect(prompt).not.toContain("PRICING:");
       expect(prompt).not.toContain("MESSAGES:");
       expect(prompt).not.toContain("TRANSFERS:");
       expect(prompt).not.toContain("AFTER HOURS:");
+      // Datetime tool instruction is always included regardless of behaviors
+      expect(prompt).toContain("TIMEZONE & SCHEDULING:");
     });
 
     it("toggling all behaviors on should include all 6", () => {

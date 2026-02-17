@@ -1,5 +1,5 @@
 import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
-import { buildPromptFromConfig, buildSchedulingSection } from "@/lib/prompt-builder";
+import { buildPromptFromConfig, buildSchedulingSection, buildAnalysisPlan } from "@/lib/prompt-builder";
 import type { PromptContext } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
@@ -127,6 +127,8 @@ export async function resyncOrgAssistants(
 
     let systemPrompt: string;
 
+    let analysisPlan: ReturnType<typeof buildAnalysisPlan> = null;
+
     if (assistant.prompt_config) {
       // Guided prompt builder — rebuild with KB + timezone context
       const config = assistant.prompt_config as unknown as PromptConfig;
@@ -139,6 +141,7 @@ export async function resyncOrgAssistants(
         businessHours: orgBusinessHours,
       };
       systemPrompt = buildPromptFromConfig(config, promptContext);
+      analysisPlan = buildAnalysisPlan(config);
     } else {
       // Legacy prompt — replace placeholder or append
       if (assistant.system_prompt.includes("{knowledge_base}")) {
@@ -163,6 +166,7 @@ export async function resyncOrgAssistants(
           messages: [{ role: "system", content: systemPrompt }],
           ...(toolIds && { toolIds }),
         },
+        ...(analysisPlan && { analysisPlan }),
       });
     } catch (err) {
       console.error(
