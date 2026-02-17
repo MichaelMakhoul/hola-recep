@@ -1,6 +1,6 @@
 import type { PromptConfig, CollectionField, TonePreset, VerificationMethod, FieldType } from "./types";
 
-interface PromptContext {
+export interface PromptContext {
   businessName: string;
   industry: string;
   knowledgeBase?: string;
@@ -39,7 +39,10 @@ function getVerificationInstruction(verification: VerificationMethod, label: str
 }
 
 function formatHourForPrompt(time: string): string {
-  const [h, m] = time.split(":").map(Number);
+  const parts = time.split(":");
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return time; // return raw value if unparseable
   const period = h >= 12 ? "PM" : "AM";
   const hour12 = h % 12 || 12;
   const mins = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;

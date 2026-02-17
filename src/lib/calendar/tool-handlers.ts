@@ -250,15 +250,16 @@ function formatBuiltInAvailabilityForVoice(
  *
  * e.g., "2026-02-18T10:00:00" + "Australia/Sydney" → "2026-02-18T10:00:00+11:00"
  */
-function ensureTimezoneOffset(datetime: string, timezone: string): string {
+export function ensureTimezoneOffset(datetime: string, timezone: string): string {
   // Already has offset — leave it alone
   if (/[Zz]$/.test(datetime) || /[+-]\d{2}:\d{2}$/.test(datetime)) {
     return datetime;
   }
 
-  // Compute the UTC offset for this datetime in the target timezone.
-  // We parse the naive datetime, pretend it's in the target TZ, then compare
-  // with UTC to derive the offset.
+  // Quick sanity check: if the datetime string is not parseable at all, bail out.
+  // NOTE: `new Date(datetime)` without "Z" is implementation-dependent (may be
+  // treated as local or UTC). We only use it for the isNaN guard — the actual
+  // offset calculation below uses `new Date(\`${datetime}Z\`)` which is always UTC.
   const naiveDate = new Date(datetime);
   if (isNaN(naiveDate.getTime())) return datetime; // unparseable — let caller handle
 
@@ -308,6 +309,8 @@ function ensureTimezoneOffset(datetime: string, timezone: string): string {
   const tzYear = parseInt(getPart(tzParts, "year"), 10);
   const utcYear = parseInt(getPart(utcParts, "year"), 10);
 
+  // Both Date constructors below use the server's local timezone, but since we
+  // only care about the *difference*, the server's TZ offset cancels out.
   const tzTotal = new Date(tzYear, tzMonth - 1, tzDay, tzHour, tzMin).getTime();
   const utcTotal = new Date(utcYear, utcMonth - 1, utcDay, utcHour, utcMin).getTime();
   const offsetMinutes = (tzTotal - utcTotal) / 60_000;

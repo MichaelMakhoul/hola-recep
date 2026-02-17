@@ -1,6 +1,8 @@
 import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
 import { buildPromptFromConfig, buildSchedulingSection } from "@/lib/prompt-builder";
+import type { PromptContext } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
+import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SupabaseAny = any;
@@ -90,16 +92,8 @@ export async function resyncOrgAssistants(
   const aggregatedKB = await getAggregatedKnowledgeBase(supabase, organizationId);
 
   // Fetch org timezone and business hours for prompt context
-  const { data: orgRow, error: orgError } = await (supabase as any)
-    .from("organizations")
-    .select("timezone, business_hours")
-    .eq("id", organizationId)
-    .single();
-  if (orgError) {
-    console.error("Failed to fetch org timezone/business_hours for resync:", { organizationId, error: orgError });
-  }
-  const orgTimezone: string | undefined = orgRow?.timezone || undefined;
-  const orgBusinessHours = orgRow?.business_hours || undefined;
+  const { timezone: orgTimezone, businessHours: orgBusinessHours } =
+    await getOrgScheduleContext(supabase, organizationId, "KB resync");
 
   const { data: assistants, error } = await (supabase as any)
     .from("assistants")
@@ -109,7 +103,11 @@ export async function resyncOrgAssistants(
     .eq("organization_id", organizationId)
     .eq("is_active", true);
 
-  if (error || !assistants || assistants.length === 0) {
+  if (error) {
+    console.error("Failed to fetch assistants for KB resync:", { organizationId, error });
+    return;
+  }
+  if (!assistants || assistants.length === 0) {
     return;
   }
 
@@ -133,13 +131,14 @@ export async function resyncOrgAssistants(
       // Guided prompt builder — rebuild with KB + timezone context
       const config = assistant.prompt_config as unknown as PromptConfig;
       const industry = assistant.settings?.industry || "other";
-      systemPrompt = buildPromptFromConfig(config, {
+      const promptContext: PromptContext = {
         businessName: assistant.name,
         industry,
         knowledgeBase: aggregatedKB || undefined,
         timezone: orgTimezone,
         businessHours: orgBusinessHours,
-      });
+      };
+      systemPrompt = buildPromptFromConfig(config, promptContext);
     } else {
       // Legacy prompt — replace placeholder or append
       if (assistant.system_prompt.includes("{knowledge_base}")) {

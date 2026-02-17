@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema } from "@/lib/prompt-builder";
+import type { PromptContext } from "@/lib/prompt-builder";
 import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
+import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 
@@ -114,19 +116,8 @@ export async function POST(request: Request) {
       : null;
 
     // Fetch org timezone and business hours for prompt context
-    const { data: orgRow, error: orgError } = await (supabase as any)
-      .from("organizations")
-      .select("timezone, business_hours")
-      .eq("id", membership.organization_id)
-      .single();
-    if (orgError) {
-      console.error("Failed to fetch org timezone/business_hours for assistant creation:", {
-        organizationId: membership.organization_id,
-        error: orgError,
-      });
-    }
-    const orgTimezone: string | undefined = orgRow?.timezone || undefined;
-    const orgBusinessHours = orgRow?.business_hours || undefined;
+    const { timezone: orgTimezone, businessHours: orgBusinessHours } =
+      await getOrgScheduleContext(supabase, membership.organization_id, "assistant creation");
 
     // Inject org knowledge base into the system prompt for Vapi
     const aggregatedKB = await getAggregatedKnowledgeBase(
@@ -138,13 +129,14 @@ export async function POST(request: Request) {
     if (validatedData.promptConfig) {
       const config = validatedData.promptConfig as PromptConfig;
       const industry = validatedData.settings?.industry || "other";
-      vapiSystemPrompt = buildPromptFromConfig(config, {
+      const promptContext: PromptContext = {
         businessName: validatedData.name,
         industry,
         knowledgeBase: aggregatedKB || undefined,
         timezone: orgTimezone,
         businessHours: orgBusinessHours,
-      });
+      };
+      vapiSystemPrompt = buildPromptFromConfig(config, promptContext);
     } else if (aggregatedKB) {
       if (validatedData.systemPrompt.includes("{knowledge_base}")) {
         vapiSystemPrompt = validatedData.systemPrompt.replace(

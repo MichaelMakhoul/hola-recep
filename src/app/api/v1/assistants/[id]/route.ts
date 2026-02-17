@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
 import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema } from "@/lib/prompt-builder";
+import type { PromptContext } from "@/lib/prompt-builder";
 import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
+import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 
@@ -175,19 +177,8 @@ export async function PATCH(
           : currentAssistant.prompt_config;
 
         // Fetch org timezone and business hours for prompt context
-        const { data: orgRow, error: orgError } = await (supabase as any)
-          .from("organizations")
-          .select("timezone, business_hours")
-          .eq("id", membership.organization_id)
-          .single();
-        if (orgError) {
-          console.error("Failed to fetch org timezone/business_hours for assistant update:", {
-            organizationId: membership.organization_id,
-            error: orgError,
-          });
-        }
-        const orgTimezone: string | undefined = orgRow?.timezone || undefined;
-        const orgBusinessHours = orgRow?.business_hours || undefined;
+        const { timezone: orgTimezone, businessHours: orgBusinessHours } =
+          await getOrgScheduleContext(supabase, membership.organization_id, "assistant update");
 
         const aggregatedKB = await getAggregatedKnowledgeBase(
           supabase,
@@ -198,13 +189,14 @@ export async function PATCH(
         if (promptConfig) {
           const config = promptConfig as PromptConfig;
           const industry = mergedSettings.industry || "other";
-          vapiSystemPrompt = buildPromptFromConfig(config, {
+          const promptContext: PromptContext = {
             businessName: validatedData.name || currentAssistant.name,
             industry,
             knowledgeBase: aggregatedKB || undefined,
             timezone: orgTimezone,
             businessHours: orgBusinessHours,
-          });
+          };
+          vapiSystemPrompt = buildPromptFromConfig(config, promptContext);
         } else {
           if (aggregatedKB) {
             if (rawPrompt.includes("{knowledge_base}")) {

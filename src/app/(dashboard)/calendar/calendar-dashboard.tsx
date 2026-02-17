@@ -394,10 +394,10 @@ export function CalendarDashboard({
               </div>
             ) : calendarView === "years" ? (
               <div className="grid grid-cols-4 gap-2 py-4">
-                {Array.from({ length: 12 }, (_, i) => yearRangeStart + i).map(
-                  (year) => {
-                    const isCurrentYear = year === new Date().getFullYear();
-                    return (
+                {(() => {
+                  const now = new Date();
+                  return Array.from({ length: 12 }, (_, i) => yearRangeStart + i).map(
+                    (year) => (
                       <button
                         key={year}
                         onClick={() => {
@@ -410,22 +410,20 @@ export function CalendarDashboard({
                         }}
                         className={cn(
                           "rounded-md py-4 text-sm font-medium transition-colors hover:bg-muted",
-                          isCurrentYear && "ring-2 ring-primary"
+                          year === now.getFullYear() && "ring-2 ring-primary"
                         )}
                       >
                         {year}
                       </button>
-                    );
-                  }
-                )}
+                    )
+                  );
+                })()}
               </div>
             ) : calendarView === "months" ? (
               <div className="grid grid-cols-4 gap-2 py-4">
-                {MONTH_NAMES.map((name, index) => {
-                  const isCurrentMonth =
-                    index === new Date().getMonth() &&
-                    currentMonth.getFullYear() === new Date().getFullYear();
-                  return (
+                {(() => {
+                  const now = new Date();
+                  return MONTH_NAMES.map((name, index) => (
                     <button
                       key={name}
                       onClick={() =>
@@ -437,13 +435,15 @@ export function CalendarDashboard({
                       }
                       className={cn(
                         "rounded-md py-4 text-sm font-medium transition-colors hover:bg-muted",
-                        isCurrentMonth && "ring-2 ring-primary"
+                        index === now.getMonth() &&
+                          currentMonth.getFullYear() === now.getFullYear() &&
+                          "ring-2 ring-primary"
                       )}
                     >
                       {name}
                     </button>
-                  );
-                })}
+                  ));
+                })()}
               </div>
             ) : (
               <div>
