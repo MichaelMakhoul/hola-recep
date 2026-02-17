@@ -3,7 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import crypto from "crypto";
 import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
 import { sendMissedCallNotification, sendVoicemailNotification, sendFailedCallNotification } from "@/lib/notifications/notification-service";
-import { incrementCallUsage, canMakeCall } from "@/lib/stripe/billing-service";
+import { incrementCallUsage } from "@/lib/stripe/billing-service";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 import {
   handleBookAppointment,
@@ -113,6 +113,9 @@ function mapEndedReason(endedReason: string | undefined): string {
       return "busy";
     case "silence-timed-out":
     case "pipeline-error-openai-llm-failed":
+    case "pipeline-error-openai-voice-failed":
+    case "pipeline-error-deepgram-transcriber-failed":
+    case "server-error":
     case "assistant-error":
       return "failed";
     case undefined:
@@ -140,7 +143,7 @@ function humanizeEndedReason(endedReason: string | undefined): string {
       return "Our server encountered an error processing the call.";
     default:
       return endedReason
-        ? `The call ended unexpectedly (${endedReason}).`
+        ? `The call ended unexpectedly (${endedReason.substring(0, 100)}).`
         : "The call ended unexpectedly for an unknown reason.";
   }
 }
@@ -191,6 +194,31 @@ async function resolveCallContext(
   }
 
   return { phoneNumber, assistantId };
+}
+
+/**
+ * Build the insert payload for a new call record.
+ * Shared between status-update (call started) and end-of-call-report (fallback creation).
+ */
+function buildCallInsertPayload(
+  phoneNumber: { id: string; organization_id: string },
+  assistantId: string | null,
+  call: VapiCall
+) {
+  return {
+    organization_id: phoneNumber.organization_id,
+    assistant_id: assistantId,
+    phone_number_id: phoneNumber.id,
+    vapi_call_id: call.id,
+    caller_phone: call.customer?.number,
+    direction: call.type === "outbound" ? "outbound" : "inbound",
+    status: "in-progress",
+    started_at: call.startedAt,
+  };
+}
+
+function isLikelyVoicemail(recordingUrl: string | undefined, durationSeconds: number | null): boolean {
+  return !!recordingUrl && !!durationSeconds && durationSeconds > 10 && durationSeconds < 120;
 }
 
 // POST /api/webhooks/vapi - Handle Vapi webhook events
@@ -260,16 +288,8 @@ export async function POST(request: Request) {
           }
 
           if (!existingCall) {
-            const { error: insertError } = await (supabase.from("calls") as any).insert({
-              organization_id: phoneNumber.organization_id,
-              assistant_id: assistantId,
-              phone_number_id: phoneNumber.id,
-              vapi_call_id: call.id,
-              caller_phone: call.customer?.number,
-              direction: call.type === "outbound" ? "outbound" : "inbound",
-              status: "in-progress",
-              started_at: call.startedAt,
-            });
+            const { error: insertError } = await (supabase.from("calls") as any)
+              .insert(buildCallInsertPayload(phoneNumber, assistantId, call));
 
             if (insertError) {
               console.error("Failed to create call record:", {
@@ -380,35 +400,26 @@ export async function POST(request: Request) {
               { error: "Phone number not found" },
               { status: 500 }
             );
-          } else {
-            const { data: newCall, error: insertError } = await (supabase.from("calls") as any)
-              .insert({
-                organization_id: phoneNumber.organization_id,
-                assistant_id: assistantId,
-                phone_number_id: phoneNumber.id,
-                vapi_call_id: call.id,
-                caller_phone: call.customer?.number,
-                direction: call.type === "outbound" ? "outbound" : "inbound",
-                status: "in-progress",
-                started_at: call.startedAt,
-              })
-              .select("id, organization_id, caller_phone")
-              .single();
-
-            if (insertError) {
-              console.error("Failed to create call record in end-of-call-report fallback:", {
-                vapiCallId: call.id,
-                organizationId: phoneNumber.organization_id,
-                error: insertError,
-              });
-              return NextResponse.json(
-                { error: "Failed to record call" },
-                { status: 500 }
-              );
-            }
-
-            existingCall = newCall;
           }
+
+          const { data: newCall, error: insertError } = await (supabase.from("calls") as any)
+            .insert(buildCallInsertPayload(phoneNumber, assistantId, call))
+            .select("id, organization_id, caller_phone")
+            .single();
+
+          if (insertError) {
+            console.error("Failed to create call record in end-of-call-report fallback:", {
+              vapiCallId: call.id,
+              organizationId: phoneNumber.organization_id,
+              error: insertError,
+            });
+            return NextResponse.json(
+              { error: "Failed to record call" },
+              { status: 500 }
+            );
+          }
+
+          existingCall = newCall;
         }
 
         // Run spam analysis
@@ -501,65 +512,67 @@ export async function POST(request: Request) {
 
         // Send notifications based on call outcome (skip for spam)
         if (existingCall && !spamAnalysis?.isSpam) {
-          if (callStatus === "failed") {
-            sendFailedCallNotification({
+          try {
+            if (callStatus === "failed") {
+              await sendFailedCallNotification({
+                organizationId: existingCall.organization_id,
+                callId: existingCall.id,
+                callerPhone: call.customer?.number || "Unknown",
+                callerName: callerName ?? undefined,
+                timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+                duration: durationSeconds ?? undefined,
+                summary: summary ?? undefined,
+                failureReason: humanizeEndedReason(endedReason),
+                endedReason: endedReason ?? undefined,
+              });
+            } else if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
+              await sendMissedCallNotification({
+                organizationId: existingCall.organization_id,
+                callId: existingCall.id,
+                callerPhone: call.customer?.number || "Unknown",
+                timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+                duration: durationSeconds ?? undefined,
+                summary: summary ?? undefined,
+              });
+            } else if (isLikelyVoicemail(recordingUrl, durationSeconds)) {
+              await sendVoicemailNotification({
+                organizationId: existingCall.organization_id,
+                callId: existingCall.id,
+                callerPhone: call.customer?.number || "Unknown",
+                timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
+                duration: durationSeconds!,
+                voicemailUrl: recordingUrl!,
+                voicemailTranscript: transcript ?? undefined,
+              });
+            }
+          } catch (err) {
+            console.error("Failed to send call notification:", {
               organizationId: existingCall.organization_id,
               callId: existingCall.id,
-              callerPhone: call.customer?.number || "Unknown",
-              callerName: callerName ?? undefined,
-              timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
-              duration: durationSeconds ?? undefined,
-              summary: summary ?? undefined,
-              failureReason: humanizeEndedReason(endedReason),
-              endedReason: endedReason ?? undefined,
-            }).catch((err) => console.error("Failed to send failed call notification:", err));
-          } else if (callStatus === "no-answer" || (durationSeconds !== null && durationSeconds < 10)) {
-            sendMissedCallNotification({
-              organizationId: existingCall.organization_id,
-              callId: existingCall.id,
-              callerPhone: call.customer?.number || "Unknown",
-              timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
-              duration: durationSeconds ?? undefined,
-              summary: summary ?? undefined,
-            }).catch((err) => console.error("Failed to send missed call notification:", err));
-          }
-
-          // Heuristic: recordings between 10-120 seconds are likely voicemails
-          if (recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10) {
-            sendVoicemailNotification({
-              organizationId: existingCall.organization_id,
-              callId: existingCall.id,
-              callerPhone: call.customer?.number || "Unknown",
-              timestamp: call.startedAt ? new Date(call.startedAt) : new Date(),
-              duration: durationSeconds,
-              voicemailUrl: recordingUrl,
-              voicemailTranscript: transcript ?? undefined,
-            }).catch((err) => console.error("Failed to send voicemail notification:", err));
+              callStatus,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
 
         // Fire-and-forget webhook delivery to user integrations
         if (existingCall) {
-          // Look up assistant name for the payload
           let assistantName: string | null = null;
-          if (existingCall.organization_id) {
-            const { data: assistantRecord, error: assistantLookupError } = await (supabase.from("assistants") as any)
-              .select("name")
-              .eq("vapi_assistant_id", call.assistantId)
-              .single();
-            if (assistantLookupError && assistantLookupError.code !== "PGRST116") {
-              console.error("Failed to look up assistant name for webhook:", assistantLookupError);
-            }
-            if (assistantRecord) assistantName = assistantRecord.name;
+          const { data: assistantRecord, error: assistantLookupError } = await (supabase.from("assistants") as any)
+            .select("name")
+            .eq("vapi_assistant_id", call.assistantId)
+            .single();
+          if (assistantLookupError && assistantLookupError.code !== "PGRST116") {
+            console.error("Failed to look up assistant name for webhook:", assistantLookupError);
           }
+          if (assistantRecord) assistantName = assistantRecord.name;
 
-          // Determine correct webhook event based on call outcome
-          const isVoicemail = recordingUrl && durationSeconds && durationSeconds < 120 && durationSeconds > 10;
+          const voicemail = isLikelyVoicemail(recordingUrl, durationSeconds);
           const isMissed = callStatus === "no-answer" || callStatus === "busy";
 
           type WebhookEvent = "call.completed" | "call.missed" | "voicemail.received";
           let webhookEvent: WebhookEvent = "call.completed";
-          if (isVoicemail) {
+          if (voicemail) {
             webhookEvent = "voicemail.received";
           } else if (isMissed) {
             webhookEvent = "call.missed";

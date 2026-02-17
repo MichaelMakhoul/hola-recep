@@ -14,6 +14,8 @@ import { isUrlAllowed, escapeHtml } from "@/lib/security/validation";
 import { Resend } from "resend";
 import Twilio from "twilio";
 
+let resendClient: Resend | null = null;
+
 export interface NotificationPreferences {
   email_on_missed_call: boolean;
   email_on_voicemail: boolean;
@@ -84,7 +86,15 @@ export async function getNotificationPreferences(
     .eq("organization_id", organizationId)
     .single();
 
-  if (error || !data) {
+  if (error) {
+    console.error("[Notifications] Failed to load preferences:", {
+      organizationId,
+      error: error.message || error.code,
+    });
+    return null;
+  }
+
+  if (!data) {
     return null;
   }
 
@@ -118,7 +128,16 @@ export async function getOrganizationOwnerEmail(
     .eq("role", "owner")
     .single();
 
-  if (memberError || !member) {
+  if (memberError) {
+    console.error("[Notifications] Failed to find org owner:", {
+      organizationId,
+      error: memberError.message || memberError.code,
+    });
+    return null;
+  }
+
+  if (!member) {
+    console.warn("[Notifications] No owner found for organization:", organizationId);
     return null;
   }
 
@@ -129,7 +148,20 @@ export async function getOrganizationOwnerEmail(
     .eq("id", member.user_id)
     .single();
 
-  if (profileError || !profile) {
+  if (profileError) {
+    console.error("[Notifications] Failed to load owner profile:", {
+      organizationId,
+      userId: member.user_id,
+      error: profileError.message || profileError.code,
+    });
+    return null;
+  }
+
+  if (!profile?.email) {
+    console.warn("[Notifications] Owner has no email:", {
+      organizationId,
+      userId: member.user_id,
+    });
     return null;
   }
 
@@ -143,13 +175,15 @@ export async function sendMissedCallNotification(
   data: CallNotificationData
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
-  if (!prefs) return;
+  const shouldEmail = prefs ? prefs.email_on_missed_call : true;
+  const shouldSms = prefs ? prefs.sms_on_missed_call && prefs.sms_phone_number : false;
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
-  // Send email notification
-  if (prefs.email_on_missed_call && email) {
-    await sendEmail({
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
       to: email,
       subject: `Missed Call from ${data.callerName || data.callerPhone}`,
       template: "missed-call",
@@ -159,23 +193,27 @@ export async function sendMissedCallNotification(
         timestamp: data.timestamp.toLocaleString(),
         summary: data.summary,
       },
-    });
+    }));
   }
 
-  // Send SMS notification
-  if (prefs.sms_on_missed_call && prefs.sms_phone_number) {
-    await sendSMS({
+  if (shouldSms && prefs?.sms_phone_number) {
+    channels.push(sendSMS({
       to: prefs.sms_phone_number,
       message: `Missed call from ${data.callerName || data.callerPhone} at ${data.timestamp.toLocaleTimeString()}`,
-    });
+    }));
   }
 
-  // Send webhook notification
-  if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "missed_call",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -193,8 +231,10 @@ export async function sendFailedCallNotification(
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
+  const channels: Promise<void>[] = [];
+
   if (shouldEmail && email) {
-    await sendEmail({
+    channels.push(sendEmail({
       to: email,
       subject: `Failed Call — Action Required`,
       template: "failed-call",
@@ -207,22 +247,28 @@ export async function sendFailedCallNotification(
         summary: data.summary,
         duration: data.duration,
       },
-    });
+    }));
   }
 
   if (shouldSms && prefs?.sms_phone_number) {
     const caller = data.callerName || data.callerPhone;
-    await sendSMS({
+    channels.push(sendSMS({
       to: prefs.sms_phone_number,
       message: `[Hola Recep] Failed call from ${caller} at ${data.timestamp.toLocaleTimeString()}. Please call them back. Reason: ${data.failureReason}`,
-    });
+    }));
   }
 
   if (prefs?.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "call_failed",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -233,13 +279,15 @@ export async function sendVoicemailNotification(
   data: VoicemailNotificationData
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
-  if (!prefs) return;
+  const shouldEmail = prefs ? prefs.email_on_voicemail : true;
+  const shouldSms = prefs ? prefs.sms_on_voicemail && prefs.sms_phone_number : false;
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
-  // Send email notification
-  if (prefs.email_on_voicemail && email) {
-    await sendEmail({
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
       to: email,
       subject: `New Voicemail from ${data.callerName || data.callerPhone}`,
       template: "voicemail",
@@ -251,23 +299,27 @@ export async function sendVoicemailNotification(
         transcript: data.voicemailTranscript,
         duration: data.duration,
       },
-    });
+    }));
   }
 
-  // Send SMS notification
-  if (prefs.sms_on_voicemail && prefs.sms_phone_number) {
-    await sendSMS({
+  if (shouldSms && prefs?.sms_phone_number) {
+    channels.push(sendSMS({
       to: prefs.sms_phone_number,
       message: `New voicemail from ${data.callerName || data.callerPhone}. ${data.voicemailTranscript ? `"${data.voicemailTranscript.substring(0, 100)}..."` : ""}`,
-    });
+    }));
   }
 
-  // Send webhook notification
-  if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "voicemail",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -370,49 +422,45 @@ interface WebhookPayload {
 /**
  * Send email using Resend
  */
-async function sendEmail(params: EmailParams): Promise<boolean> {
+async function sendEmail(params: EmailParams): Promise<void> {
   const { to, subject, template, data } = params;
 
   const apiKey = process.env.EMAIL_API_KEY;
   const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
 
   if (!apiKey) {
-    console.log("[Email] No API key configured, skipping email:", {
+    console.warn("[Email] No API key configured, skipping email:", {
       to,
       subject,
       template,
     });
-    return false;
+    return;
   }
 
-  try {
-    const html = generateEmailHtml(template, data);
-    const resend = new Resend(apiKey);
+  const html = generateEmailHtml(template, data);
 
-    const { error } = await resend.emails.send({
-      from: fromEmail,
-      to,
-      subject,
-      html,
-    });
-
-    if (error) {
-      console.error("[Email] Resend error:", error);
-      return false;
-    }
-
-    console.log("[Email] Sent:", { to, subject, template });
-    return true;
-  } catch (error) {
-    console.error("[Email] Failed to send email:", error);
-    return false;
+  if (!resendClient) {
+    resendClient = new Resend(apiKey);
   }
+
+  const { error } = await resendClient.emails.send({
+    from: fromEmail,
+    to,
+    subject,
+    html,
+  });
+
+  if (error) {
+    throw new Error(`Resend API error: ${error.message}`);
+  }
+
+  console.log("[Email] Sent:", { to, subject, template });
 }
 
 /**
  * Send SMS using Twilio
  */
-async function sendSMS(params: SMSParams): Promise<boolean> {
+async function sendSMS(params: SMSParams): Promise<void> {
   const { to, message } = params;
 
   const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -420,59 +468,44 @@ async function sendSMS(params: SMSParams): Promise<boolean> {
   const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
 
   if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
-    console.log("[SMS] Twilio not configured, skipping SMS:", { to });
-    return false;
+    console.warn("[SMS] Twilio not configured, skipping SMS:", { to });
+    return;
   }
 
-  try {
-    const client = Twilio(twilioAccountSid, twilioAuthToken);
-    await client.messages.create({
-      body: message,
-      to,
-      from: twilioFromNumber,
-    });
+  const client = Twilio(twilioAccountSid, twilioAuthToken);
+  await client.messages.create({
+    body: message,
+    to,
+    from: twilioFromNumber,
+  });
 
-    console.log("[SMS] Sent:", { to, message: message.substring(0, 50) });
-    return true;
-  } catch (error) {
-    console.error("[SMS] Failed to send SMS:", error);
-    return false;
-  }
+  console.log("[SMS] Sent:", { to, message: message.substring(0, 50) });
 }
 
 /**
  * Send webhook notification
  * Includes SSRF protection to prevent webhooks to internal networks
  */
-async function sendWebhook(url: string, payload: WebhookPayload): Promise<boolean> {
-  try {
-    // SSRF Protection: Prevent webhooks to internal/private networks
-    if (!isUrlAllowed(url)) {
-      console.error("[Webhook] URL blocked - internal or private address:", url);
-      return false;
-    }
+async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> {
+  // SSRF Protection: Prevent webhooks to internal/private networks
+  if (!isUrlAllowed(url)) {
+    throw new Error(`Webhook URL blocked - internal or private address: ${url}`);
+  }
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Webhook-Source": "hola-recep",
-      },
-      body: JSON.stringify({
-        ...payload,
-        timestamp: new Date().toISOString(),
-      }),
-    });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Webhook-Source": "hola-recep",
+    },
+    body: JSON.stringify({
+      ...payload,
+      timestamp: new Date().toISOString(),
+    }),
+  });
 
-    if (!response.ok) {
-      console.error("[Webhook] Failed to send webhook:", response.status);
-      return false;
-    }
-
-    return true;
-  } catch (error) {
-    console.error("[Webhook] Failed to send webhook:", error);
-    return false;
+  if (!response.ok) {
+    throw new Error(`Webhook returned ${response.status}`);
   }
 }
 
