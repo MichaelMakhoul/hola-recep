@@ -57,6 +57,21 @@ async function resolveCalendarTools(): Promise<string[]> {
   for (const def of toolDefs) {
     const found = existing.find((t) => t.function?.name === def.function.name);
     if (found) {
+      // Sync server URL if it has drifted (e.g. tool was created with localhost)
+      if (serverConfig && found.server?.url !== serverConfig.url) {
+        try {
+          await vapi.updateTool(found.id, { server: serverConfig });
+          console.log(`Synced server URL for tool "${def.function.name}"`);
+        } catch (err) {
+          // Don't cache stale tool IDs — let the next call retry the sync
+          console.error(`Failed to sync server URL for tool "${def.function.name}":`, err);
+          throw new Error(
+            `Calendar tool "${def.function.name}" server URL sync failed. ` +
+            `Tool points to "${found.server?.url}" instead of "${serverConfig.url}". ` +
+            `${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
       ids.push(found.id);
     } else {
       try {

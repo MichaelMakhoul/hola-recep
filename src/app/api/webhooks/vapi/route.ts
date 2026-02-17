@@ -715,6 +715,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ results });
       }
 
+      case "conversation-update":
+      case "speech-update":
+      case "assistant-started":
+        // Known Vapi events we don't need to act on — ignore silently
+        break;
+
       default:
         console.log("Unhandled event type:", event.message.type);
     }

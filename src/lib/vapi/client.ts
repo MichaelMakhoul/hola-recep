@@ -412,6 +412,13 @@ export class VapiClient {
     return this.request<VapiStandaloneTool[]>("GET", "/tool");
   }
 
+  async updateTool(
+    toolId: string,
+    data: { server?: ServerConfig }
+  ): Promise<VapiStandaloneTool> {
+    return this.request<VapiStandaloneTool>("PATCH", `/tool/${toolId}`, data);
+  }
+
   // ============================================
   // WEB CALL METHODS (for test calls in browser)
   // ============================================

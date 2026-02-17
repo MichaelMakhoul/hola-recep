@@ -332,9 +332,10 @@ export async function sendAppointmentNotification(
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
-  // Send email notification
+  const channels: Promise<void>[] = [];
+
   if (prefs.email_on_appointment_booked && email) {
-    await sendEmail({
+    channels.push(sendEmail({
       to: email,
       subject: `New Appointment Booked - ${data.appointmentDate.toLocaleDateString()}`,
       template: "appointment-booked",
@@ -345,15 +346,20 @@ export async function sendAppointmentNotification(
         appointmentTime: data.appointmentTime,
         serviceName: data.serviceName,
       },
-    });
+    }));
   }
 
-  // Send webhook notification
   if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "appointment_booked",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -368,8 +374,10 @@ export async function sendDailySummaryNotification(
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
+  const channels: Promise<void>[] = [];
+
   if (prefs.email_daily_summary && email) {
-    await sendEmail({
+    channels.push(sendEmail({
       to: email,
       subject: `Daily Call Summary - ${data.date.toLocaleDateString()}`,
       template: "daily-summary",
@@ -384,14 +392,20 @@ export async function sendDailySummaryNotification(
           ? Math.round((data.answeredCalls / data.totalCalls) * 100)
           : 0,
       },
-    });
+    }));
   }
 
   if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "daily_summary",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -427,12 +441,9 @@ async function sendEmail(params: EmailParams): Promise<void> {
   const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
 
   if (!apiKey) {
-    console.warn("[Email] No API key configured, skipping email:", {
-      to,
-      subject,
-      template,
-    });
-    return;
+    throw new Error(
+      `[Email] EMAIL_API_KEY is not configured. Cannot send "${template}" email to ${to} (subject: "${subject}")`
+    );
   }
 
   const html = generateEmailHtml(template, data);
@@ -466,8 +477,9 @@ async function sendSMS(params: SMSParams): Promise<void> {
   const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
 
   if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
-    console.warn("[SMS] Twilio not configured, skipping SMS:", { to });
-    return;
+    throw new Error(
+      `[SMS] Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER). Cannot send SMS to ${to}`
+    );
   }
 
   const client = Twilio(twilioAccountSid, twilioAuthToken);
