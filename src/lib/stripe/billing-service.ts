@@ -111,6 +111,11 @@ export async function getUsageInfo(organizationId: string): Promise<UsageInfo> {
   };
 }
 
+function checkShouldUpgrade(callsUsed: number, callsLimit: number): boolean {
+  if (callsLimit <= 0) return false;
+  return (callsUsed / callsLimit) >= CALL_THRESHOLD_WARNING;
+}
+
 /**
  * Increment call usage for an organization
  * Uses atomic database increment to prevent race conditions
@@ -120,16 +125,13 @@ export async function incrementCallUsage(
 ): Promise<{ success: boolean; shouldUpgrade: boolean }> {
   const supabase = createAdminClient();
 
-  // Use atomic increment via RPC or raw SQL to prevent race conditions
-  // First, atomically increment and get the new values
   const { data: result, error } = await (supabase as any).rpc(
     "increment_call_usage",
     { org_id: organizationId }
   );
 
-  // If the RPC doesn't exist, fall back to regular update (with race condition warning)
-  if (error && error.code === "42883") {
-    // Function doesn't exist, use fallback
+  // If the RPC doesn't exist, fall back to regular update (with race condition risk)
+  if (error && (error.code === "42883" || error.code === "PGRST202")) {
     const { data: subscription } = await (supabase as any)
       .from("subscriptions")
       .select("id, plan, calls_used, calls_limit")
@@ -143,15 +145,21 @@ export async function incrementCallUsage(
     const newUsage = (subscription.calls_used || 0) + 1;
     const callsLimit = subscription.calls_limit || 100;
 
-    await (supabase as any)
+    const { error: updateError } = await (supabase as any)
       .from("subscriptions")
       .update({ calls_used: newUsage })
       .eq("id", subscription.id);
 
-    const usagePercentage = callsLimit > 0 ? newUsage / callsLimit : 0;
-    const shouldUpgrade = callsLimit > 0 && usagePercentage >= CALL_THRESHOLD_WARNING;
+    if (updateError) {
+      console.error("Failed to update call usage (fallback path):", {
+        organizationId,
+        subscriptionId: subscription.id,
+        error: updateError,
+      });
+      return { success: false, shouldUpgrade: false };
+    }
 
-    return { success: true, shouldUpgrade };
+    return { success: true, shouldUpgrade: checkShouldUpgrade(newUsage, callsLimit) };
   }
 
   if (error || !result) {
@@ -159,13 +167,10 @@ export async function incrementCallUsage(
     return { success: false, shouldUpgrade: false };
   }
 
-  // result should contain { calls_used, calls_limit }
-  const callsLimit = result.calls_limit || 100;
-  const newUsage = result.calls_used || 0;
-  const usagePercentage = callsLimit > 0 ? newUsage / callsLimit : 0;
-  const shouldUpgrade = callsLimit > 0 && usagePercentage >= CALL_THRESHOLD_WARNING;
-
-  return { success: true, shouldUpgrade };
+  return {
+    success: true,
+    shouldUpgrade: checkShouldUpgrade(result.calls_used || 0, result.calls_limit || 100),
+  };
 }
 
 /**

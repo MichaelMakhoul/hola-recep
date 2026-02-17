@@ -3,6 +3,7 @@
  *
  * Handles sending email and SMS notifications for various events:
  * - Missed calls
+ * - Failed calls
  * - Voicemails
  * - Appointment bookings
  * - Daily summaries
@@ -10,14 +11,20 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isUrlAllowed, escapeHtml } from "@/lib/security/validation";
+import { Resend } from "resend";
+import Twilio from "twilio";
+
+let resendClient: Resend | null = null;
 
 export interface NotificationPreferences {
   email_on_missed_call: boolean;
   email_on_voicemail: boolean;
   email_on_appointment_booked: boolean;
+  email_on_failed_call: boolean;
   email_daily_summary: boolean;
   sms_on_missed_call: boolean;
   sms_on_voicemail: boolean;
+  sms_on_failed_call: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
 }
@@ -38,6 +45,11 @@ export interface CallNotificationData {
 export interface VoicemailNotificationData extends CallNotificationData {
   voicemailUrl: string;
   voicemailTranscript?: string;
+}
+
+export interface FailedCallNotificationData extends CallNotificationData {
+  failureReason: string;
+  endedReason?: string;
 }
 
 export interface AppointmentNotificationData {
@@ -75,6 +87,12 @@ export async function getNotificationPreferences(
     .single();
 
   if (error || !data) {
+    if (error && error.code !== "PGRST116") {
+      console.error("[Notifications] Failed to load preferences:", {
+        organizationId,
+        error: error.message || error.code,
+      });
+    }
     return null;
   }
 
@@ -82,9 +100,11 @@ export async function getNotificationPreferences(
     email_on_missed_call: data.email_on_missed_call ?? true,
     email_on_voicemail: data.email_on_voicemail ?? true,
     email_on_appointment_booked: data.email_on_appointment_booked ?? true,
+    email_on_failed_call: data.email_on_failed_call ?? true,
     email_daily_summary: data.email_daily_summary ?? true,
     sms_on_missed_call: data.sms_on_missed_call ?? false,
     sms_on_voicemail: data.sms_on_voicemail ?? false,
+    sms_on_failed_call: data.sms_on_failed_call ?? false,
     sms_phone_number: data.sms_phone_number,
     webhook_url: data.webhook_url,
   };
@@ -106,7 +126,16 @@ export async function getOrganizationOwnerEmail(
     .eq("role", "owner")
     .single();
 
-  if (memberError || !member) {
+  if (memberError) {
+    console.error("[Notifications] Failed to find org owner:", {
+      organizationId,
+      error: memberError.message || memberError.code,
+    });
+    return null;
+  }
+
+  if (!member) {
+    console.warn("[Notifications] No owner found for organization:", organizationId);
     return null;
   }
 
@@ -117,7 +146,20 @@ export async function getOrganizationOwnerEmail(
     .eq("id", member.user_id)
     .single();
 
-  if (profileError || !profile) {
+  if (profileError) {
+    console.error("[Notifications] Failed to load owner profile:", {
+      organizationId,
+      userId: member.user_id,
+      error: profileError.message || profileError.code,
+    });
+    return null;
+  }
+
+  if (!profile?.email) {
+    console.warn("[Notifications] Owner has no email:", {
+      organizationId,
+      userId: member.user_id,
+    });
     return null;
   }
 
@@ -131,13 +173,15 @@ export async function sendMissedCallNotification(
   data: CallNotificationData
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
-  if (!prefs) return;
+  const shouldEmail = prefs ? prefs.email_on_missed_call : true;
+  const shouldSms = prefs ? prefs.sms_on_missed_call && prefs.sms_phone_number : false;
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
-  // Send email notification
-  if (prefs.email_on_missed_call && email) {
-    await sendEmail({
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
       to: email,
       subject: `Missed Call from ${data.callerName || data.callerPhone}`,
       template: "missed-call",
@@ -147,23 +191,82 @@ export async function sendMissedCallNotification(
         timestamp: data.timestamp.toLocaleString(),
         summary: data.summary,
       },
-    });
+    }));
   }
 
-  // Send SMS notification
-  if (prefs.sms_on_missed_call && prefs.sms_phone_number) {
-    await sendSMS({
+  if (shouldSms && prefs?.sms_phone_number) {
+    channels.push(sendSMS({
       to: prefs.sms_phone_number,
       message: `Missed call from ${data.callerName || data.callerPhone} at ${data.timestamp.toLocaleTimeString()}`,
-    });
+    }));
   }
 
-  // Send webhook notification
-  if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "missed_call",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
+  }
+}
+
+/**
+ * Send failed call notification — alerts business owner when a call fails
+ * so they can call the customer back.
+ */
+export async function sendFailedCallNotification(
+  data: FailedCallNotificationData
+): Promise<void> {
+  const prefs = await getNotificationPreferences(data.organizationId);
+  // Failed calls always notify even without prefs — default to email-on
+  const shouldEmail = prefs ? prefs.email_on_failed_call : true;
+  const shouldSms = prefs ? prefs.sms_on_failed_call && prefs.sms_phone_number : false;
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
+      to: email,
+      subject: `Failed Call — Action Required`,
+      template: "failed-call",
+      data: {
+        callerPhone: data.callerPhone,
+        callerName: data.callerName,
+        timestamp: data.timestamp.toLocaleString(),
+        failureReason: data.failureReason,
+        endedReason: data.endedReason,
+        summary: data.summary,
+        duration: data.duration,
+      },
+    }));
+  }
+
+  if (shouldSms && prefs?.sms_phone_number) {
+    const caller = data.callerName || data.callerPhone;
+    channels.push(sendSMS({
+      to: prefs.sms_phone_number,
+      message: `[Hola Recep] Failed call from ${caller} at ${data.timestamp.toLocaleTimeString()}. Please call them back. Reason: ${data.failureReason}`,
+    }));
+  }
+
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
+      event: "call_failed",
+      data,
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -174,13 +277,15 @@ export async function sendVoicemailNotification(
   data: VoicemailNotificationData
 ): Promise<void> {
   const prefs = await getNotificationPreferences(data.organizationId);
-  if (!prefs) return;
+  const shouldEmail = prefs ? prefs.email_on_voicemail : true;
+  const shouldSms = prefs ? prefs.sms_on_voicemail && prefs.sms_phone_number : false;
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
-  // Send email notification
-  if (prefs.email_on_voicemail && email) {
-    await sendEmail({
+  const channels: Promise<void>[] = [];
+
+  if (shouldEmail && email) {
+    channels.push(sendEmail({
       to: email,
       subject: `New Voicemail from ${data.callerName || data.callerPhone}`,
       template: "voicemail",
@@ -192,23 +297,27 @@ export async function sendVoicemailNotification(
         transcript: data.voicemailTranscript,
         duration: data.duration,
       },
-    });
+    }));
   }
 
-  // Send SMS notification
-  if (prefs.sms_on_voicemail && prefs.sms_phone_number) {
-    await sendSMS({
+  if (shouldSms && prefs?.sms_phone_number) {
+    channels.push(sendSMS({
       to: prefs.sms_phone_number,
       message: `New voicemail from ${data.callerName || data.callerPhone}. ${data.voicemailTranscript ? `"${data.voicemailTranscript.substring(0, 100)}..."` : ""}`,
-    });
+    }));
   }
 
-  // Send webhook notification
-  if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+  if (prefs?.webhook_url) {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "voicemail",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -309,114 +418,92 @@ interface WebhookPayload {
 }
 
 /**
- * Send email using configured email provider
- * TODO: Integrate with actual email provider (Resend, SendGrid, etc.)
+ * Send email using Resend
  */
-async function sendEmail(params: EmailParams): Promise<boolean> {
+async function sendEmail(params: EmailParams): Promise<void> {
   const { to, subject, template, data } = params;
 
-  // Check if email is configured
   const apiKey = process.env.EMAIL_API_KEY;
   const fromEmail = process.env.EMAIL_FROM || "notifications@holarecep.com";
 
   if (!apiKey) {
-    console.log("[Email] No API key configured, skipping email:", {
+    console.warn("[Email] No API key configured, skipping email:", {
       to,
       subject,
       template,
     });
-    return false;
+    return;
   }
 
-  try {
-    // Generate email HTML from template
-    const html = generateEmailHtml(template, data);
+  const html = generateEmailHtml(template, data);
 
-    // TODO: Replace with actual email provider integration
-    // Example with Resend:
-    // const resend = new Resend(apiKey);
-    // await resend.emails.send({
-    //   from: fromEmail,
-    //   to,
-    //   subject,
-    //   html,
-    // });
-
-    console.log("[Email] Would send email:", { to, subject, template });
-    return true;
-  } catch (error) {
-    console.error("[Email] Failed to send email:", error);
-    return false;
+  if (!resendClient) {
+    resendClient = new Resend(apiKey);
   }
+
+  const { error } = await resendClient.emails.send({
+    from: fromEmail,
+    to,
+    subject,
+    html,
+  });
+
+  if (error) {
+    throw new Error(`Resend API error: ${error.message}`);
+  }
+
+  console.log("[Email] Sent:", { to, subject, template });
 }
 
 /**
- * Send SMS using configured SMS provider
- * TODO: Integrate with actual SMS provider (Twilio, etc.)
+ * Send SMS using Twilio
  */
-async function sendSMS(params: SMSParams): Promise<boolean> {
+async function sendSMS(params: SMSParams): Promise<void> {
   const { to, message } = params;
 
-  // Check if SMS is configured
   const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
   const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
   const twilioFromNumber = process.env.TWILIO_FROM_NUMBER;
 
   if (!twilioAccountSid || !twilioAuthToken || !twilioFromNumber) {
-    console.log("[SMS] Twilio not configured, skipping SMS:", { to });
-    return false;
+    console.warn("[SMS] Twilio not configured, skipping SMS:", { to });
+    return;
   }
 
-  try {
-    // TODO: Replace with actual Twilio integration
-    // const client = twilio(twilioAccountSid, twilioAuthToken);
-    // await client.messages.create({
-    //   body: message,
-    //   to,
-    //   from: twilioFromNumber,
-    // });
+  const client = Twilio(twilioAccountSid, twilioAuthToken);
+  await client.messages.create({
+    body: message,
+    to,
+    from: twilioFromNumber,
+  });
 
-    console.log("[SMS] Would send SMS:", { to, message: message.substring(0, 50) });
-    return true;
-  } catch (error) {
-    console.error("[SMS] Failed to send SMS:", error);
-    return false;
-  }
+  console.log("[SMS] Sent:", { to, message: message.substring(0, 50) });
 }
 
 /**
  * Send webhook notification
  * Includes SSRF protection to prevent webhooks to internal networks
  */
-async function sendWebhook(url: string, payload: WebhookPayload): Promise<boolean> {
-  try {
-    // SSRF Protection: Prevent webhooks to internal/private networks
-    if (!isUrlAllowed(url)) {
-      console.error("[Webhook] URL blocked - internal or private address:", url);
-      return false;
-    }
+async function sendWebhook(url: string, payload: WebhookPayload): Promise<void> {
+  // SSRF Protection: Prevent webhooks to internal/private networks
+  if (!isUrlAllowed(url)) {
+    throw new Error(`Webhook URL blocked - internal or private address: ${url}`);
+  }
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Webhook-Source": "hola-recep",
-      },
-      body: JSON.stringify({
-        ...payload,
-        timestamp: new Date().toISOString(),
-      }),
-    });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Webhook-Source": "hola-recep",
+    },
+    body: JSON.stringify({
+      ...payload,
+      timestamp: new Date().toISOString(),
+    }),
+  });
 
-    if (!response.ok) {
-      console.error("[Webhook] Failed to send webhook:", response.status);
-      return false;
-    }
-
-    return true;
-  } catch (error) {
-    console.error("[Webhook] Failed to send webhook:", error);
-    return false;
+  if (!response.ok) {
+    throw new Error(`Webhook returned ${response.status}`);
   }
 }
 
@@ -442,6 +529,27 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <p>You missed a call from <strong>${d.callerName || d.callerPhone}</strong> at ${d.timestamp}.</p>
       ${d.summary ? `<p><em>Summary: ${d.summary}</em></p>` : ""}
       <p>Log in to your dashboard to see more details.</p>
+    `,
+    "failed-call": (d) => `
+      <h2 style="color: #dc2626;">Failed Call — Action Required</h2>
+      <p>A caller tried to reach your business but the call failed.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Caller</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.callerName ? `${d.callerName} (${d.callerPhone})` : d.callerPhone}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Time</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.timestamp}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Reason</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.failureReason}</td>
+        </tr>
+        ${d.duration ? `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold;">Duration</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${d.duration}s</td></tr>` : ""}
+        ${d.summary ? `<tr><td style="padding: 8px; font-weight: bold;">Summary</td><td style="padding: 8px;">${d.summary}</td></tr>` : ""}
+      </table>
+      <p><strong>Please call them back as soon as possible.</strong></p>
     `,
     voicemail: (d) => `
       <h2>New Voicemail</h2>
