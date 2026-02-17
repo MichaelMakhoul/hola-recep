@@ -86,15 +86,13 @@ export async function getNotificationPreferences(
     .eq("organization_id", organizationId)
     .single();
 
-  if (error) {
-    console.error("[Notifications] Failed to load preferences:", {
-      organizationId,
-      error: error.message || error.code,
-    });
-    return null;
-  }
-
-  if (!data) {
+  if (error || !data) {
+    if (error && error.code !== "PGRST116") {
+      console.error("[Notifications] Failed to load preferences:", {
+        organizationId,
+        error: error.message || error.code,
+      });
+    }
     return null;
   }
 
