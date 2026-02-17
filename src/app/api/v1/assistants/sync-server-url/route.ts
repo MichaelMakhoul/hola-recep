@@ -85,11 +85,39 @@ export async function POST(request: NextRequest) {
 
     const updated = results.filter((r) => r.success).length;
 
+    // Also sync standalone tool server URLs (e.g. calendar tools created with localhost)
+    const toolResults: { id: string; name: string; success: boolean; error?: string }[] = [];
+    try {
+      const tools = await vapi.listTools();
+      for (const tool of tools) {
+        if (tool.server?.url && tool.server.url !== serverConfig.url) {
+          try {
+            await vapi.updateTool(tool.id, { server: serverConfig });
+            toolResults.push({
+              id: tool.id,
+              name: tool.function?.name || tool.id,
+              success: true,
+            });
+          } catch (err) {
+            toolResults.push({
+              id: tool.id,
+              name: tool.function?.name || tool.id,
+              success: false,
+              error: err instanceof Error ? err.message : "Unknown error",
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to list/sync Vapi tools:", err);
+    }
+
+    const toolsUpdated = toolResults.filter((r) => r.success).length;
+
     return NextResponse.json({
       serverUrl: serverConfig.url,
-      updated,
-      failed: results.length - updated,
-      results,
+      assistants: { updated, failed: results.length - updated, results },
+      tools: { updated: toolsUpdated, failed: toolResults.length - toolsUpdated, results: toolResults },
     });
   } catch (error) {
     console.error("Sync server URL failed:", error);
