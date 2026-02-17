@@ -51,6 +51,7 @@ async function resolveCalendarTools(): Promise<string[]> {
     calendarTools.checkAvailability,
     calendarTools.bookAppointment,
     calendarTools.cancelAppointment,
+    calendarTools.getCurrentDatetime,
   ];
 
   const ids: string[] = [];

@@ -390,17 +390,31 @@ export const calendarTools = {
       },
     },
   },
+
+  getCurrentDatetime: {
+    type: "function" as const,
+    function: {
+      name: "get_current_datetime",
+      description: "Get the current date and time. Call this BEFORE interpreting any relative date references like 'today', 'tomorrow', 'next Monday', etc.",
+      parameters: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+  },
 };
 
 /**
  * Format availability slots for voice response
  */
-export function formatAvailabilityForVoice(availability: CalComAvailability[]): string {
+export function formatAvailabilityForVoice(availability: CalComAvailability[], timezone?: string): string {
   if (availability.length === 0 || availability.every((a) => a.slots.length === 0)) {
     return "I'm sorry, there are no available appointments on that date. Would you like to check a different day?";
   }
 
   const parts: string[] = [];
+  const tzOption = timezone ? { timeZone: timezone } : {};
 
   for (const day of availability) {
     if (day.slots.length === 0) continue;
@@ -411,6 +425,7 @@ export function formatAvailabilityForVoice(availability: CalComAvailability[]): 
       weekday: "long",
       month: "long",
       day: "numeric",
+      ...tzOption,
     });
 
     // Get first few slots
@@ -421,6 +436,7 @@ export function formatAvailabilityForVoice(availability: CalComAvailability[]): 
         hour: "numeric",
         minute: "2-digit",
         hour12: true,
+        ...tzOption,
       });
     });
 
@@ -435,19 +451,22 @@ export function formatAvailabilityForVoice(availability: CalComAvailability[]): 
 /**
  * Format booking confirmation for voice response
  */
-export function formatBookingConfirmation(booking: CalComBooking): string {
+export function formatBookingConfirmation(booking: CalComBooking, timezone?: string): string {
   const startDate = new Date(booking.startTime);
+  const tzOption = timezone ? { timeZone: timezone } : {};
 
   const dateStr = startDate.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
     day: "numeric",
+    ...tzOption,
   });
 
   const timeStr = startDate.toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
+    ...tzOption,
   });
 
   return `I've booked your appointment for ${dateStr} at ${timeStr}. You should receive a confirmation email shortly. Is there anything else I can help you with?`;

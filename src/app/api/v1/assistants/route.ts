@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
-import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
+import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema } from "@/lib/prompt-builder";
 import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
@@ -113,6 +113,15 @@ export async function POST(request: Request) {
       ? buildAnalysisPlan(validatedData.promptConfig)
       : null;
 
+    // Fetch org timezone and business hours for prompt context
+    const { data: orgRow } = await (supabase as any)
+      .from("organizations")
+      .select("timezone, business_hours")
+      .eq("id", membership.organization_id)
+      .single();
+    const orgTimezone: string | undefined = orgRow?.timezone || undefined;
+    const orgBusinessHours = orgRow?.business_hours || undefined;
+
     // Inject org knowledge base into the system prompt for Vapi
     const aggregatedKB = await getAggregatedKnowledgeBase(
       supabase,
@@ -127,6 +136,8 @@ export async function POST(request: Request) {
         businessName: validatedData.name,
         industry,
         knowledgeBase: aggregatedKB || undefined,
+        timezone: orgTimezone,
+        businessHours: orgBusinessHours,
       });
     } else if (aggregatedKB) {
       if (validatedData.systemPrompt.includes("{knowledge_base}")) {
@@ -137,6 +148,11 @@ export async function POST(request: Request) {
       } else {
         vapiSystemPrompt = `${validatedData.systemPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
       }
+    }
+
+    // For legacy prompts (no promptConfig), append scheduling context
+    if (!validatedData.promptConfig) {
+      vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours)}`;
     }
 
     // Ensure standalone calendar tools exist in Vapi and get their IDs (cached after first call)

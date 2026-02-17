@@ -1,4 +1,4 @@
-import { getVapiClient } from "@/lib/vapi";
+import { getVapiClient, ensureCalendarTools } from "@/lib/vapi";
 import { buildPromptFromConfig } from "@/lib/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 
@@ -89,6 +89,14 @@ export async function resyncOrgAssistants(
 ): Promise<void> {
   const aggregatedKB = await getAggregatedKnowledgeBase(supabase, organizationId);
 
+  // Fetch org timezone for prompt context
+  const { data: orgRow } = await (supabase as any)
+    .from("organizations")
+    .select("timezone")
+    .eq("id", organizationId)
+    .single();
+  const orgTimezone: string | undefined = orgRow?.timezone || undefined;
+
   const { data: assistants, error } = await (supabase as any)
     .from("assistants")
     .select(
@@ -101,6 +109,15 @@ export async function resyncOrgAssistants(
     return;
   }
 
+  // Ensure calendar tools (including get_current_datetime) exist and get their IDs
+  let toolIds: string[] | undefined;
+  try {
+    toolIds = await ensureCalendarTools();
+  } catch (toolError) {
+    console.error("Failed to provision calendar tools during resync:", toolError);
+    // Continue without toolIds — prompt update is still valuable
+  }
+
   const vapi = getVapiClient();
 
   for (const assistant of assistants as AssistantRow[]) {
@@ -109,13 +126,14 @@ export async function resyncOrgAssistants(
     let systemPrompt: string;
 
     if (assistant.prompt_config) {
-      // Guided prompt builder — rebuild with KB context
+      // Guided prompt builder — rebuild with KB + timezone context
       const config = assistant.prompt_config as unknown as PromptConfig;
       const industry = assistant.settings?.industry || "other";
       systemPrompt = buildPromptFromConfig(config, {
         businessName: assistant.name,
         industry,
         knowledgeBase: aggregatedKB || undefined,
+        timezone: orgTimezone,
       });
     } else {
       // Legacy prompt — replace placeholder or append
@@ -129,6 +147,10 @@ export async function resyncOrgAssistants(
       } else {
         systemPrompt = assistant.system_prompt;
       }
+      // For legacy prompts, append timezone scheduling instruction
+      if (orgTimezone) {
+        systemPrompt += `\n\nTIMEZONE & SCHEDULING:\nThe business is in the ${orgTimezone} timezone.\nIMPORTANT: Before interpreting ANY relative date or time reference (such as "today", "tomorrow", "next week", etc.), you MUST call the get_current_datetime tool first. Never guess or assume the current date.`;
+      }
     }
 
     try {
@@ -137,6 +159,7 @@ export async function resyncOrgAssistants(
           provider: assistant.model_provider,
           model: assistant.model,
           messages: [{ role: "system", content: systemPrompt }],
+          ...(toolIds && { toolIds }),
         },
       });
     } catch (err) {
