@@ -414,7 +414,7 @@ export class VapiClient {
 
   async updateTool(
     toolId: string,
-    data: Partial<{ server: ServerConfig }>
+    data: { server?: ServerConfig }
   ): Promise<VapiStandaloneTool> {
     return this.request<VapiStandaloneTool>("PATCH", `/tool/${toolId}`, data);
   }

@@ -332,9 +332,10 @@ export async function sendAppointmentNotification(
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
-  // Send email notification
+  const channels: Promise<void>[] = [];
+
   if (prefs.email_on_appointment_booked && email) {
-    await sendEmail({
+    channels.push(sendEmail({
       to: email,
       subject: `New Appointment Booked - ${data.appointmentDate.toLocaleDateString()}`,
       template: "appointment-booked",
@@ -345,15 +346,20 @@ export async function sendAppointmentNotification(
         appointmentTime: data.appointmentTime,
         serviceName: data.serviceName,
       },
-    });
+    }));
   }
 
-  // Send webhook notification
   if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "appointment_booked",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
@@ -368,8 +374,10 @@ export async function sendDailySummaryNotification(
 
   const email = await getOrganizationOwnerEmail(data.organizationId);
 
+  const channels: Promise<void>[] = [];
+
   if (prefs.email_daily_summary && email) {
-    await sendEmail({
+    channels.push(sendEmail({
       to: email,
       subject: `Daily Call Summary - ${data.date.toLocaleDateString()}`,
       template: "daily-summary",
@@ -384,14 +392,20 @@ export async function sendDailySummaryNotification(
           ? Math.round((data.answeredCalls / data.totalCalls) * 100)
           : 0,
       },
-    });
+    }));
   }
 
   if (prefs.webhook_url) {
-    await sendWebhook(prefs.webhook_url, {
+    channels.push(sendWebhook(prefs.webhook_url, {
       event: "daily_summary",
       data,
-    });
+    }));
+  }
+
+  const results = await Promise.allSettled(channels);
+  const failures = results.filter((r) => r.status === "rejected");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length}/${results.length} notification channels failed: ${(failures[0] as PromiseRejectedResult).reason}`);
   }
 }
 
