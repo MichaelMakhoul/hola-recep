@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Building, Clock, Globe } from "lucide-react";
+import { Loader2, Building, Clock, Globe, Calendar } from "lucide-react";
 import {
   SUPPORTED_COUNTRIES,
   getCountryConfig,
@@ -48,6 +48,16 @@ const DAYS = [
   { key: "sunday", label: "Sunday" },
 ];
 
+const APPOINTMENT_DURATIONS = [
+  { value: "15", label: "15 minutes" },
+  { value: "20", label: "20 minutes" },
+  { value: "30", label: "30 minutes" },
+  { value: "45", label: "45 minutes" },
+  { value: "60", label: "1 hour" },
+  { value: "90", label: "1.5 hours" },
+  { value: "120", label: "2 hours" },
+];
+
 interface BusinessHours {
   [key: string]: { open: string; close: string } | null;
 }
@@ -63,6 +73,7 @@ interface BusinessSettingsFormProps {
     address: string;
     timezone: string;
     businessHours: BusinessHours | null;
+    defaultAppointmentDuration: number;
   };
 }
 
@@ -78,6 +89,9 @@ export function BusinessSettingsForm({
   const [phone, setPhone] = useState(initialData.phone);
   const [address, setAddress] = useState(initialData.address);
   const [timezone, setTimezone] = useState(initialData.timezone);
+  const [appointmentDuration, setAppointmentDuration] = useState(
+    initialData.defaultAppointmentDuration
+  );
   const [businessHours, setBusinessHours] = useState<BusinessHours>(
     initialData.businessHours || {
       monday: { open: "09:00", close: "17:00" },
@@ -120,6 +134,7 @@ export function BusinessSettingsForm({
           business_address: address,
           timezone,
           business_hours: businessHours,
+          default_appointment_duration: appointmentDuration,
         })
         .eq("id", organizationId);
 
@@ -334,6 +349,40 @@ export function BusinessSettingsForm({
               </div>
             ))}
           </div>
+        </div>
+
+        <Separator />
+
+        {/* Appointment Duration */}
+        <div className="space-y-2">
+          <Label className="flex items-center gap-2">
+            <Calendar className="h-4 w-4" />
+            Default Appointment Duration
+          </Label>
+          <Select
+            value={String(appointmentDuration)}
+            onValueChange={(v) => setAppointmentDuration(Number(v))}
+          >
+            <SelectTrigger className="w-full md:w-[300px]">
+              <SelectValue placeholder="Select duration" />
+            </SelectTrigger>
+            <SelectContent>
+              {APPOINTMENT_DURATIONS.map((d) => (
+                <SelectItem key={d.value} value={d.value}>
+                  {d.label}
+                </SelectItem>
+              ))}
+              {!APPOINTMENT_DURATIONS.some((d) => d.value === String(appointmentDuration)) && (
+                <SelectItem value={String(appointmentDuration)}>
+                  {appointmentDuration} minutes
+                </SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            How long each appointment slot should be when using built-in
+            booking. Cal.com users: duration comes from your event type instead.
+          </p>
         </div>
 
         <Separator />

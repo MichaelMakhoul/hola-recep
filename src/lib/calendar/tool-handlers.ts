@@ -26,15 +26,19 @@ interface BusinessHours {
 interface OrgSchedule {
   timezone: string;
   businessHours: Record<string, BusinessHours | null>;
+  defaultAppointmentDuration: number;
 }
 
-const SLOT_DURATION_MINUTES = 30;
+// Fallback slot duration when no org-level default is configured
+const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
 /**
- * Fetch org business hours and timezone. Throws on DB error so callers
- * can surface a user-friendly message instead of silently skipping validation.
+ * Fetch org business hours, timezone, and default appointment duration.
+ * Throws on DB error so callers can surface a user-friendly message
+ * instead of silently skipping validation. Returns null only when
+ * the org row itself is not found.
  */
 async function getOrgSchedule(
   organizationId: string
@@ -42,7 +46,7 @@ async function getOrgSchedule(
   const supabase = createAdminClient();
   const { data: org, error } = await (supabase as any)
     .from("organizations")
-    .select("business_hours, timezone")
+    .select("business_hours, timezone, default_appointment_duration")
     .eq("id", organizationId)
     .single();
 
@@ -51,11 +55,12 @@ async function getOrgSchedule(
     throw new Error(`Failed to fetch org schedule: ${error.message}`);
   }
 
-  if (!org || !org.business_hours) return null;
+  if (!org) return null;
 
   return {
     timezone: org.timezone || "America/New_York",
-    businessHours: org.business_hours,
+    businessHours: org.business_hours ?? {},
+    defaultAppointmentDuration: org.default_appointment_duration ?? 30,
   };
 }
 
@@ -125,11 +130,50 @@ function formatTime(h: number, m: number): string {
   return `${hour12}${mins} ${period}`;
 }
 
+// ─── Pure slot helpers (exported for testing) ────────────────────────────────
+
+/**
+ * Generate slot start-time strings for a given date and business-hours window.
+ * Pure function with no DB calls.
+ */
+export function generateSlots(
+  date: string,
+  hoursOpen: number,
+  hoursClose: number,
+  durationMinutes: number
+): string[] {
+  const slots: string[] = [];
+  for (let m = hoursOpen; m + durationMinutes <= hoursClose; m += durationMinutes) {
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(m % 60).padStart(2, "0");
+    slots.push(`${date}T${hh}:${mm}:00`);
+  }
+  return slots;
+}
+
+/**
+ * Check whether a requested appointment time fits within business hours.
+ * Returns null if valid, or an error message string if invalid.
+ */
+export function validateBookingTime(
+  reqStartMinutes: number,
+  durationMinutes: number,
+  hoursOpen: number,
+  hoursClose: number
+): string | null {
+  const reqEndMinutes = reqStartMinutes + durationMinutes;
+  if (reqStartMinutes < hoursOpen || reqEndMinutes > hoursClose) {
+    return "outside_business_hours";
+  }
+  return null;
+}
+
 // ─── Built-in availability ──────────────────────────────────────────────────
 
 /**
- * Compute available 30-minute slots for a given date using the org's
- * business hours minus any existing (non-cancelled) appointments.
+ * Compute available time slots for a given date using the org's business
+ * hours minus any existing (non-cancelled) appointments. Slot duration
+ * defaults to 30 minutes but can be overridden via durationMinutes.
  *
  * @returns ISO-like datetime strings in the org's local time (no TZ offset),
  *          e.g., "2025-03-15T09:00:00". Throws on DB errors.
@@ -137,7 +181,8 @@ function formatTime(h: number, m: number): string {
 async function getBuiltInAvailability(
   organizationId: string,
   date: string,
-  schedule?: OrgSchedule | null
+  schedule?: OrgSchedule | null,
+  durationMinutes: number = DEFAULT_SLOT_DURATION_MINUTES
 ): Promise<string[]> {
   const resolvedSchedule = schedule ?? (await getOrgSchedule(organizationId));
   if (!resolvedSchedule) return [];
@@ -145,13 +190,7 @@ async function getBuiltInAvailability(
   const hours = getHoursForDate(resolvedSchedule, date);
   if (!hours) return []; // Closed
 
-  // Generate slot start times in org-local time
-  const slots: string[] = [];
-  for (let m = hours.open; m + SLOT_DURATION_MINUTES <= hours.close; m += SLOT_DURATION_MINUTES) {
-    const hh = String(Math.floor(m / 60)).padStart(2, "0");
-    const mm = String(m % 60).padStart(2, "0");
-    slots.push(`${date}T${hh}:${mm}:00`);
-  }
+  const slots = generateSlots(date, hours.open, hours.close, durationMinutes);
 
   if (slots.length === 0) return [];
 
@@ -187,7 +226,7 @@ async function getBuiltInAvailability(
     const [, timeStr] = slotIso.split("T");
     const [slotH, slotM] = timeStr.split(":").map(Number);
     const slotStartMin = slotH * 60 + slotM;
-    const slotEndMin = slotStartMin + SLOT_DURATION_MINUTES;
+    const slotEndMin = slotStartMin + durationMinutes;
 
     return !appointments.some((appt) => {
       const { h: aH, m: aM } = getTimeInTimezone(new Date(appt.start_time), timezone);
@@ -198,7 +237,7 @@ async function getBuiltInAvailability(
         const { h: eH, m: eM } = getTimeInTimezone(new Date(appt.end_time), timezone);
         apptEndMin = eH * 60 + eM;
       } else {
-        apptEndMin = apptStartMin + (appt.duration_minutes || SLOT_DURATION_MINUTES);
+        apptEndMin = apptStartMin + (appt.duration_minutes || DEFAULT_SLOT_DURATION_MINUTES);
       }
 
       return slotStartMin < apptEndMin && slotEndMin > apptStartMin;
@@ -484,7 +523,8 @@ export async function handleCheckAvailability(
   try {
     const schedule = await getOrgSchedule(organizationId);
     const timezone = schedule?.timezone || "America/New_York";
-    const slots = await getBuiltInAvailability(organizationId, date, schedule);
+    const durationMinutes = schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
+    const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes);
     return {
       success: true,
       message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
@@ -826,6 +866,7 @@ async function bookInternal(
   }
 
   const internalTimezone = schedule?.timezone || "America/New_York";
+  const durationMinutes = schedule?.defaultAppointmentDuration ?? DEFAULT_SLOT_DURATION_MINUTES;
   // Ensure naive datetimes are interpreted in the org's timezone, not UTC
   const tzAwareDatetime = ensureTimezoneOffset(datetime, internalTimezone);
 
@@ -838,7 +879,7 @@ async function bookInternal(
     };
   }
 
-  const endDate = new Date(startDate.getTime() + SLOT_DURATION_MINUTES * 60_000);
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
 
   if (schedule) {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -865,9 +906,8 @@ async function bookInternal(
     // Extract hour:minute in the org's timezone, not the server's
     const { h: reqH, m: reqM } = getTimeInTimezone(startDate, schedule.timezone);
     const reqMinutes = reqH * 60 + reqM;
-    const reqEndMinutes = reqMinutes + SLOT_DURATION_MINUTES;
 
-    if (reqMinutes < hours.open || reqEndMinutes > hours.close) {
+    if (validateBookingTime(reqMinutes, durationMinutes, hours.open, hours.close)) {
       const openStr = formatTime(Math.floor(hours.open / 60), hours.open % 60);
       const closeStr = formatTime(Math.floor(hours.close / 60), hours.close % 60);
       return {
@@ -892,7 +932,7 @@ async function bookInternal(
       attendee_email: bookingEmail,
       start_time: startDate.toISOString(),
       end_time: endDate.toISOString(),
-      duration_minutes: SLOT_DURATION_MINUTES,
+      duration_minutes: durationMinutes,
       status: "confirmed",
       notes: sanitizedNotes,
       metadata: { source: "ai_receptionist" },

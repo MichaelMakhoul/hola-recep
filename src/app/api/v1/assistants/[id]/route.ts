@@ -176,9 +176,12 @@ export async function PATCH(
           ? validatedData.promptConfig
           : currentAssistant.prompt_config;
 
-        // Fetch org timezone and business hours for prompt context
-        const { timezone: orgTimezone, businessHours: orgBusinessHours } =
-          await getOrgScheduleContext(supabase, membership.organization_id, "assistant update");
+        // Fetch org timezone, business hours, and appointment duration for prompt context
+        const {
+          timezone: orgTimezone,
+          businessHours: orgBusinessHours,
+          defaultAppointmentDuration,
+        } = await getOrgScheduleContext(supabase, membership.organization_id, "assistant update");
 
         const aggregatedKB = await getAggregatedKnowledgeBase(
           supabase,
@@ -195,6 +198,7 @@ export async function PATCH(
             knowledgeBase: aggregatedKB || undefined,
             timezone: orgTimezone,
             businessHours: orgBusinessHours,
+            defaultAppointmentDuration,
           };
           vapiSystemPrompt = buildPromptFromConfig(config, promptContext);
         } else {
@@ -206,7 +210,7 @@ export async function PATCH(
             }
           }
           // For legacy prompts, append scheduling context
-          vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours)}`;
+          vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours, defaultAppointmentDuration)}`;
         }
 
         // When recording is on, instruct the AI to handle opt-out requests
