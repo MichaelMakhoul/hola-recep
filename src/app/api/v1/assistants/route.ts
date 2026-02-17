@@ -115,8 +115,8 @@ export async function POST(request: Request) {
       ? buildAnalysisPlan(validatedData.promptConfig)
       : null;
 
-    // Fetch org timezone and business hours for prompt context
-    const { timezone: orgTimezone, businessHours: orgBusinessHours } =
+    // Fetch org timezone, business hours, and appointment duration for prompt context
+    const { timezone: orgTimezone, businessHours: orgBusinessHours, defaultAppointmentDuration } =
       await getOrgScheduleContext(supabase, membership.organization_id, "assistant creation");
 
     // Inject org knowledge base into the system prompt for Vapi
@@ -135,6 +135,7 @@ export async function POST(request: Request) {
         knowledgeBase: aggregatedKB || undefined,
         timezone: orgTimezone,
         businessHours: orgBusinessHours,
+        defaultAppointmentDuration,
       };
       vapiSystemPrompt = buildPromptFromConfig(config, promptContext);
     } else if (aggregatedKB) {
@@ -150,7 +151,7 @@ export async function POST(request: Request) {
 
     // For legacy prompts (no promptConfig), append scheduling context
     if (!validatedData.promptConfig) {
-      vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours)}`;
+      vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours, defaultAppointmentDuration)}`;
     }
 
     // Ensure standalone calendar tools exist in Vapi and get their IDs (cached after first call)

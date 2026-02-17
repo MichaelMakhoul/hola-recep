@@ -6,6 +6,7 @@ export interface PromptContext {
   knowledgeBase?: string;
   timezone?: string;
   businessHours?: Record<string, { open: string; close: string } | null>;
+  defaultAppointmentDuration?: number;
 }
 
 const toneDescriptions: Record<TonePreset, string> = {
@@ -56,7 +57,8 @@ function formatHourForPrompt(time: string): string {
  */
 export function buildSchedulingSection(
   timezone?: string,
-  businessHours?: Record<string, { open: string; close: string } | null>
+  businessHours?: Record<string, { open: string; close: string } | null>,
+  defaultAppointmentDuration?: number
 ): string {
   const lines: string[] = [];
   lines.push("TIMEZONE & SCHEDULING:");
@@ -80,6 +82,10 @@ export function buildSchedulingSection(
     }
     lines.push("");
     lines.push("Do NOT suggest appointment times outside of these business hours.");
+  }
+
+  if (defaultAppointmentDuration && defaultAppointmentDuration !== 30) {
+    lines.push(`Standard appointment duration is ${defaultAppointmentDuration} minutes.`);
   }
 
   lines.push(
@@ -279,7 +285,7 @@ export function buildPromptFromConfig(config: PromptConfig, context: PromptConte
   sections.push(buildBehaviorsSection(config.behaviors));
 
   // 5. Timezone, business hours & scheduling instructions (always included)
-  sections.push(buildSchedulingSection(context.timezone, context.businessHours));
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration));
 
   // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);

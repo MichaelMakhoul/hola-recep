@@ -26,6 +26,7 @@ interface BusinessHours {
 interface OrgSchedule {
   timezone: string;
   businessHours: Record<string, BusinessHours | null>;
+  defaultAppointmentDuration: number;
 }
 
 const SLOT_DURATION_MINUTES = 30;
@@ -42,7 +43,7 @@ async function getOrgSchedule(
   const supabase = createAdminClient();
   const { data: org, error } = await (supabase as any)
     .from("organizations")
-    .select("business_hours, timezone")
+    .select("business_hours, timezone, default_appointment_duration")
     .eq("id", organizationId)
     .single();
 
@@ -56,6 +57,7 @@ async function getOrgSchedule(
   return {
     timezone: org.timezone || "America/New_York",
     businessHours: org.business_hours,
+    defaultAppointmentDuration: org.default_appointment_duration || 30,
   };
 }
 
@@ -137,7 +139,8 @@ function formatTime(h: number, m: number): string {
 async function getBuiltInAvailability(
   organizationId: string,
   date: string,
-  schedule?: OrgSchedule | null
+  schedule?: OrgSchedule | null,
+  durationMinutes: number = SLOT_DURATION_MINUTES
 ): Promise<string[]> {
   const resolvedSchedule = schedule ?? (await getOrgSchedule(organizationId));
   if (!resolvedSchedule) return [];
@@ -147,7 +150,7 @@ async function getBuiltInAvailability(
 
   // Generate slot start times in org-local time
   const slots: string[] = [];
-  for (let m = hours.open; m + SLOT_DURATION_MINUTES <= hours.close; m += SLOT_DURATION_MINUTES) {
+  for (let m = hours.open; m + durationMinutes <= hours.close; m += durationMinutes) {
     const hh = String(Math.floor(m / 60)).padStart(2, "0");
     const mm = String(m % 60).padStart(2, "0");
     slots.push(`${date}T${hh}:${mm}:00`);
@@ -187,7 +190,7 @@ async function getBuiltInAvailability(
     const [, timeStr] = slotIso.split("T");
     const [slotH, slotM] = timeStr.split(":").map(Number);
     const slotStartMin = slotH * 60 + slotM;
-    const slotEndMin = slotStartMin + SLOT_DURATION_MINUTES;
+    const slotEndMin = slotStartMin + durationMinutes;
 
     return !appointments.some((appt) => {
       const { h: aH, m: aM } = getTimeInTimezone(new Date(appt.start_time), timezone);
@@ -484,7 +487,8 @@ export async function handleCheckAvailability(
   try {
     const schedule = await getOrgSchedule(organizationId);
     const timezone = schedule?.timezone || "America/New_York";
-    const slots = await getBuiltInAvailability(organizationId, date, schedule);
+    const durationMinutes = schedule?.defaultAppointmentDuration || SLOT_DURATION_MINUTES;
+    const slots = await getBuiltInAvailability(organizationId, date, schedule, durationMinutes);
     return {
       success: true,
       message: formatBuiltInAvailabilityForVoice(date, slots, timezone),
@@ -826,6 +830,7 @@ async function bookInternal(
   }
 
   const internalTimezone = schedule?.timezone || "America/New_York";
+  const durationMinutes = schedule?.defaultAppointmentDuration || SLOT_DURATION_MINUTES;
   // Ensure naive datetimes are interpreted in the org's timezone, not UTC
   const tzAwareDatetime = ensureTimezoneOffset(datetime, internalTimezone);
 
@@ -838,7 +843,7 @@ async function bookInternal(
     };
   }
 
-  const endDate = new Date(startDate.getTime() + SLOT_DURATION_MINUTES * 60_000);
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
 
   if (schedule) {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -865,7 +870,7 @@ async function bookInternal(
     // Extract hour:minute in the org's timezone, not the server's
     const { h: reqH, m: reqM } = getTimeInTimezone(startDate, schedule.timezone);
     const reqMinutes = reqH * 60 + reqM;
-    const reqEndMinutes = reqMinutes + SLOT_DURATION_MINUTES;
+    const reqEndMinutes = reqMinutes + durationMinutes;
 
     if (reqMinutes < hours.open || reqEndMinutes > hours.close) {
       const openStr = formatTime(Math.floor(hours.open / 60), hours.open % 60);
@@ -892,7 +897,7 @@ async function bookInternal(
       attendee_email: bookingEmail,
       start_time: startDate.toISOString(),
       end_time: endDate.toISOString(),
-      duration_minutes: SLOT_DURATION_MINUTES,
+      duration_minutes: durationMinutes,
       status: "confirmed",
       notes: sanitizedNotes,
       metadata: { source: "ai_receptionist" },

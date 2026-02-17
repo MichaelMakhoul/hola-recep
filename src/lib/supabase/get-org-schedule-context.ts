@@ -4,6 +4,7 @@ type SupabaseAny = any;
 export interface OrgScheduleContext {
   timezone: string | undefined;
   businessHours: Record<string, { open: string; close: string } | null> | undefined;
+  defaultAppointmentDuration: number | undefined;
 }
 
 /**
@@ -17,7 +18,7 @@ export async function getOrgScheduleContext(
 ): Promise<OrgScheduleContext> {
   const { data: orgRow, error: orgError } = await (supabase as any)
     .from("organizations")
-    .select("timezone, business_hours")
+    .select("timezone, business_hours, default_appointment_duration")
     .eq("id", organizationId)
     .single();
 
@@ -31,5 +32,6 @@ export async function getOrgScheduleContext(
   return {
     timezone: orgRow?.timezone || undefined,
     businessHours: orgRow?.business_hours || undefined,
+    defaultAppointmentDuration: orgRow?.default_appointment_duration || undefined,
   };
 }

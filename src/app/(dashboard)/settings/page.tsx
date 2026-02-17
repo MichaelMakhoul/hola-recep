@@ -34,6 +34,7 @@ interface Organization {
   timezone: string | null;
   country: string | null;
   business_hours: Record<string, { open: string; close: string } | null> | null;
+  default_appointment_duration: number | null;
 }
 
 interface Membership {
@@ -59,7 +60,7 @@ export default async function SettingsPage() {
       organizations (
         id, name, slug, type, logo_url, primary_color,
         business_name, industry, business_website, business_phone, business_address,
-        timezone, country, business_hours
+        timezone, country, business_hours, default_appointment_duration
       )
     `
     )
@@ -85,6 +86,7 @@ export default async function SettingsPage() {
           address: organization.business_address || "",
           timezone: organization.timezone || "America/New_York",
           businessHours: organization.business_hours || null,
+          defaultAppointmentDuration: organization.default_appointment_duration || 30,
         }}
       />
 

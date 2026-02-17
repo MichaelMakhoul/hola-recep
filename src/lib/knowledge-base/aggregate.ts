@@ -91,8 +91,8 @@ export async function resyncOrgAssistants(
 ): Promise<void> {
   const aggregatedKB = await getAggregatedKnowledgeBase(supabase, organizationId);
 
-  // Fetch org timezone and business hours for prompt context
-  const { timezone: orgTimezone, businessHours: orgBusinessHours } =
+  // Fetch org timezone, business hours, and appointment duration for prompt context
+  const { timezone: orgTimezone, businessHours: orgBusinessHours, defaultAppointmentDuration } =
     await getOrgScheduleContext(supabase, organizationId, "KB resync");
 
   const { data: assistants, error } = await (supabase as any)
@@ -139,6 +139,7 @@ export async function resyncOrgAssistants(
         knowledgeBase: aggregatedKB || undefined,
         timezone: orgTimezone,
         businessHours: orgBusinessHours,
+        defaultAppointmentDuration,
       };
       systemPrompt = buildPromptFromConfig(config, promptContext);
       analysisPlan = buildAnalysisPlan(config);
@@ -155,7 +156,7 @@ export async function resyncOrgAssistants(
         systemPrompt = assistant.system_prompt;
       }
       // For legacy prompts, append scheduling context
-      systemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours)}`;
+      systemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours, defaultAppointmentDuration)}`;
     }
 
     try {
