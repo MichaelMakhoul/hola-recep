@@ -11,6 +11,6 @@ export type {
 export { promptConfigSchema } from "./types";
 
 export { fieldPresetsByIndustry, universalFields, getFieldsForIndustry } from "./field-presets";
-export { buildPromptFromConfig, generateGreeting, buildAnalysisPlan } from "./generate-prompt";
-export type { AnalysisPlan } from "./generate-prompt";
+export { buildPromptFromConfig, generateGreeting, buildAnalysisPlan, buildSchedulingSection } from "./generate-prompt";
+export type { AnalysisPlan, PromptContext } from "./generate-prompt";
 export { getDefaultConfig } from "./defaults";

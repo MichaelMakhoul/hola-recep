@@ -241,6 +241,133 @@ function formatBuiltInAvailabilityForVoice(
   return `On ${dateStr}, I have openings at ${timeStrings.join(", ")}${more}. Which time works best for you?`;
 }
 
+// ─── Timezone helpers ────────────────────────────────────────────────────────
+
+/**
+ * If the datetime string lacks a timezone offset (Z or +HH:MM), compute the
+ * UTC offset for the given IANA timezone and append it. This prevents naive
+ * datetimes from being interpreted as UTC on the server.
+ *
+ * e.g., "2026-02-18T10:00:00" + "Australia/Sydney" → "2026-02-18T10:00:00+11:00"
+ */
+export function ensureTimezoneOffset(datetime: string, timezone: string): string {
+  // Already has offset — leave it alone
+  if (/[Zz]$/.test(datetime) || /[+-]\d{2}:\d{2}$/.test(datetime)) {
+    return datetime;
+  }
+
+  // Quick sanity check: if the datetime string is not parseable at all, bail out.
+  // NOTE: `new Date(datetime)` without "Z" is implementation-dependent (may be
+  // treated as local or UTC). We only use it for the isNaN guard — the actual
+  // offset calculation below uses `new Date(\`${datetime}Z\`)` which is always UTC.
+  const naiveDate = new Date(datetime);
+  if (isNaN(naiveDate.getTime())) return datetime; // unparseable — let caller handle
+
+  // Use Intl to get the timezone offset parts
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  // Format the same instant in both UTC and target TZ, then compute difference
+  const utcFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  // Create a reference date at the naive datetime value to determine offset
+  // We use a known UTC instant and compare its local representation
+  const refDate = new Date(`${datetime}Z`); // treat as UTC temporarily
+  const tzParts = formatter.formatToParts(refDate);
+  const utcParts = utcFormatter.formatToParts(refDate);
+
+  const getPart = (parts: Intl.DateTimeFormatPart[], type: string) =>
+    parts.find((p) => p.type === type)?.value || "0";
+
+  const tzHour = parseInt(getPart(tzParts, "hour"), 10);
+  const tzMin = parseInt(getPart(tzParts, "minute"), 10);
+  const tzDay = parseInt(getPart(tzParts, "day"), 10);
+  const utcHour = parseInt(getPart(utcParts, "hour"), 10);
+  const utcMin = parseInt(getPart(utcParts, "minute"), 10);
+  const utcDay = parseInt(getPart(utcParts, "day"), 10);
+
+  // Compare full date representations to handle month/year boundaries correctly
+  const tzMonth = parseInt(getPart(tzParts, "month"), 10);
+  const utcMonth = parseInt(getPart(utcParts, "month"), 10);
+  const tzYear = parseInt(getPart(tzParts, "year"), 10);
+  const utcYear = parseInt(getPart(utcParts, "year"), 10);
+
+  // Both Date constructors below use the server's local timezone, but since we
+  // only care about the *difference*, the server's TZ offset cancels out.
+  const tzTotal = new Date(tzYear, tzMonth - 1, tzDay, tzHour, tzMin).getTime();
+  const utcTotal = new Date(utcYear, utcMonth - 1, utcDay, utcHour, utcMin).getTime();
+  const offsetMinutes = (tzTotal - utcTotal) / 60_000;
+
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offH = String(Math.floor(absOffset / 60)).padStart(2, "0");
+  const offM = String(absOffset % 60).padStart(2, "0");
+
+  return `${datetime}${sign}${offH}:${offM}`;
+}
+
+// ─── Get current datetime handler ───────────────────────────────────────────
+
+export async function handleGetCurrentDatetime(
+  organizationId: string
+): Promise<ToolResult> {
+  let timezone = "America/New_York";
+  try {
+    const schedule = await getOrgSchedule(organizationId);
+    if (schedule?.timezone) timezone = schedule.timezone;
+  } catch (error) {
+    console.error("Failed to fetch org timezone for get_current_datetime, falling back to America/New_York:", {
+      organizationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: timezone,
+  });
+  const timeStr = now.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: timezone,
+  });
+
+  // ISO date for tool calls (YYYY-MM-DD)
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
+  return {
+    success: true,
+    message: `Current date and time: ${dateStr}, ${timeStr} (${timezone}). Today's date in YYYY-MM-DD format: ${parts}.`,
+  };
+}
+
 // ─── Public handlers ────────────────────────────────────────────────────────
 
 export async function handleBookAppointment(
@@ -523,12 +650,17 @@ async function bookViaCal(
   }
 
   try {
+    // Fetch org timezone to ensure naive datetime gets proper offset
+    const calSchedule = await getOrgSchedule(organizationId).catch(() => null);
+    const timezone = calSchedule?.timezone || "America/New_York";
+    const tzAwareDatetime = ensureTimezoneOffset(datetime, timezone);
+
     const bookingEmail =
       email || `booking-${crypto.randomUUID()}@noreply.holarecep.com`;
 
     const booking = await calClient.createBooking({
       eventTypeId,
-      start: datetime,
+      start: tzAwareDatetime,
       name: sanitizedName,
       email: bookingEmail,
       phone,
@@ -549,7 +681,7 @@ async function bookViaCal(
         attendee_name: sanitizedName,
         attendee_phone: phone,
         attendee_email: bookingEmail,
-        start_time: datetime,
+        start_time: tzAwareDatetime,
         end_time: booking.endTime,
         status: "confirmed",
         notes: sanitizedNotes,
@@ -573,14 +705,13 @@ async function bookViaCal(
       };
     }
 
-    // Send notification — best-effort timezone fetch
-    const appointmentDate = new Date(datetime);
-    const calSchedule = await getOrgSchedule(organizationId).catch(() => null);
-    sendNotification(organizationId, phone, sanitizedName, appointmentDate, calSchedule?.timezone);
+    // Send notification
+    const appointmentDate = new Date(tzAwareDatetime);
+    sendNotification(organizationId, phone, sanitizedName, appointmentDate, timezone);
 
     return {
       success: true,
-      message: formatBookingConfirmation(booking),
+      message: formatBookingConfirmation(booking, timezone),
       data: {
         bookingId: booking.id,
         bookingUid: booking.uid,
@@ -645,8 +776,12 @@ async function checkAvailabilityViaCal(
   }
 
   try {
-    const startTime = `${date}T00:00:00Z`;
-    const endTime = `${date}T23:59:59Z`;
+    // Fetch org timezone so we can pass timezone-aware boundaries and format output
+    const schedule = await getOrgSchedule(organizationId).catch(() => null);
+    const timezone = schedule?.timezone || "America/New_York";
+
+    const startTime = ensureTimezoneOffset(`${date}T00:00:00`, timezone);
+    const endTime = ensureTimezoneOffset(`${date}T23:59:59`, timezone);
 
     const availability = await calClient.getAvailability({
       eventTypeId,
@@ -654,7 +789,7 @@ async function checkAvailabilityViaCal(
       endTime,
     });
 
-    return { success: true, message: formatAvailabilityForVoice(availability) };
+    return { success: true, message: formatAvailabilityForVoice(availability, timezone) };
   } catch (error: any) {
     console.error("Check availability error:", { organizationId, date, message: error.message, stack: error.stack });
     return {
@@ -677,18 +812,7 @@ async function bookInternal(
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
 
-  const startDate = new Date(datetime);
-  if (isNaN(startDate.getTime())) {
-    return {
-      success: false,
-      message:
-        "I didn't understand that date and time. Could you say it again?",
-    };
-  }
-
-  const endDate = new Date(startDate.getTime() + SLOT_DURATION_MINUTES * 60_000);
-
-  // 1. Validate against business hours
+  // 1. Validate against business hours (fetch schedule first so we can apply TZ offset)
   let schedule: OrgSchedule | null;
   try {
     schedule = await getOrgSchedule(organizationId);
@@ -700,6 +824,21 @@ async function bookInternal(
         "I'm having trouble accessing our schedule right now. Let me take your information and have someone call you back.",
     };
   }
+
+  const internalTimezone = schedule?.timezone || "America/New_York";
+  // Ensure naive datetimes are interpreted in the org's timezone, not UTC
+  const tzAwareDatetime = ensureTimezoneOffset(datetime, internalTimezone);
+
+  const startDate = new Date(tzAwareDatetime);
+  if (isNaN(startDate.getTime())) {
+    return {
+      success: false,
+      message:
+        "I didn't understand that date and time. Could you say it again?",
+    };
+  }
+
+  const endDate = new Date(startDate.getTime() + SLOT_DURATION_MINUTES * 60_000);
 
   if (schedule) {
     const parts = new Intl.DateTimeFormat("en-US", {

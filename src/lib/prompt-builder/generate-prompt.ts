@@ -1,9 +1,11 @@
 import type { PromptConfig, CollectionField, TonePreset, VerificationMethod, FieldType } from "./types";
 
-interface PromptContext {
+export interface PromptContext {
   businessName: string;
   industry: string;
   knowledgeBase?: string;
+  timezone?: string;
+  businessHours?: Record<string, { open: string; close: string } | null>;
 }
 
 const toneDescriptions: Record<TonePreset, string> = {
@@ -34,6 +36,58 @@ function getVerificationInstruction(verification: VerificationMethod, label: str
     case "none":
       return "";
   }
+}
+
+function formatHourForPrompt(time: string): string {
+  const parts = time.split(":");
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return time; // return raw value if unparseable
+  const period = h >= 12 ? "PM" : "AM";
+  const hour12 = h % 12 || 12;
+  const mins = m === 0 ? "" : `:${String(m).padStart(2, "0")}`;
+  return `${hour12}${mins} ${period}`;
+}
+
+/**
+ * Build the scheduling section for the system prompt.
+ * Always includes the datetime tool instruction, regardless of whether
+ * timezone or business hours are available.
+ */
+export function buildSchedulingSection(
+  timezone?: string,
+  businessHours?: Record<string, { open: string; close: string } | null>
+): string {
+  const lines: string[] = [];
+  lines.push("TIMEZONE & SCHEDULING:");
+
+  if (timezone) {
+    lines.push(`The business is in the ${timezone} timezone.`);
+  }
+
+  if (businessHours) {
+    lines.push("");
+    lines.push("Business Hours:");
+    const dayOrder = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    for (const day of dayOrder) {
+      const h = businessHours[day];
+      const label = day.charAt(0).toUpperCase() + day.slice(1);
+      if (h && h.open && h.close) {
+        lines.push(`- ${label}: ${formatHourForPrompt(h.open)} \u2013 ${formatHourForPrompt(h.close)}`);
+      } else {
+        lines.push(`- ${label}: Closed`);
+      }
+    }
+    lines.push("");
+    lines.push("Do NOT suggest appointment times outside of these business hours.");
+  }
+
+  lines.push(
+    `CRITICAL: Before interpreting ANY relative date or time reference (such as "today", "tomorrow", "next week", "this afternoon", etc.), you MUST call the get_current_datetime tool FIRST to get the actual current date and time. ` +
+    `NEVER guess or assume what today's date is. Always call the tool. Use the YYYY-MM-DD date returned by the tool when calling check_availability or book_appointment.`
+  );
+
+  return lines.join("\n");
 }
 
 function getIndustryGuidelines(industry: string): string {
@@ -224,13 +278,16 @@ export function buildPromptFromConfig(config: PromptConfig, context: PromptConte
   // 4. Behaviors
   sections.push(buildBehaviorsSection(config.behaviors));
 
-  // 5. Industry guidelines
+  // 5. Timezone, business hours & scheduling instructions (always included)
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours));
+
+  // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);
   if (guidelines) {
     sections.push(guidelines.trim());
   }
 
-  // 6. Custom instructions
+  // 7. Custom instructions
   if (config.customInstructions.trim()) {
     sections.push(`ADDITIONAL INSTRUCTIONS:\n${config.customInstructions.trim()}`);
   }

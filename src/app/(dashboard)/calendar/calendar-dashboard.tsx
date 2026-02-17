@@ -76,6 +76,8 @@ interface Stats {
   thisMonth: number;
 }
 
+type CalendarView = "days" | "months" | "years";
+
 interface CalendarDashboardProps {
   initialAppointments: Appointment[];
   initialStats: Stats;
@@ -88,6 +90,7 @@ interface CalendarDashboardProps {
 // --- Helpers ---
 
 const DAY_NAMES = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAY_MAP: Record<number, string> = {
   0: "sunday",
   1: "monday",
@@ -174,6 +177,8 @@ export function CalendarDashboard({
   const [appointments, setAppointments] = useState<Appointment[]>(initialAppointments);
   const [stats, setStats] = useState<Stats>(initialStats);
   const [isLoading, setIsLoading] = useState(false);
+  const [calendarView, setCalendarView] = useState<CalendarView>("days");
+  const [yearRangeStart, setYearRangeStart] = useState(() => Math.floor(new Date().getFullYear() / 12) * 12);
 
   const visibleDays = useMemo(() => getVisibleDays(currentMonth), [currentMonth]);
 
@@ -217,17 +222,13 @@ export function CalendarDashboard({
       );
   }, [appointments]);
 
-  async function navigateMonth(direction: "prev" | "next") {
-    const newMonth =
-      direction === "prev"
-        ? subMonths(currentMonth, 1)
-        : addMonths(currentMonth, 1);
-
-    setCurrentMonth(newMonth);
+  async function goToMonth(targetMonth: Date) {
+    setCurrentMonth(targetMonth);
+    setCalendarView("days");
     setIsLoading(true);
 
     try {
-      const monthParam = format(newMonth, "yyyy-MM");
+      const monthParam = format(targetMonth, "yyyy-MM");
       const res = await fetch(
         `/api/v1/calendar/appointments?month=${monthParam}`
       );
@@ -319,18 +320,50 @@ export function CalendarDashboard({
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => navigateMonth("prev")}
+                onClick={() => {
+                  if (calendarView === "years") {
+                    setYearRangeStart((prev) => prev - 12);
+                  } else if (calendarView === "months") {
+                    setCurrentMonth(subMonths(currentMonth, 12));
+                  } else {
+                    goToMonth(subMonths(currentMonth, 1));
+                  }
+                }}
                 disabled={isLoading}
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
-              <CardTitle className="text-lg">
-                {format(currentMonth, "MMMM yyyy")}
-              </CardTitle>
+              <Button
+                variant="ghost"
+                className="text-lg font-semibold"
+                onClick={() => {
+                  if (calendarView === "days") {
+                    setCalendarView("months");
+                  } else if (calendarView === "months") {
+                    setCalendarView("years");
+                  } else {
+                    setCalendarView("days");
+                  }
+                }}
+              >
+                {calendarView === "years"
+                  ? `${yearRangeStart}\u2013${yearRangeStart + 11}`
+                  : calendarView === "months"
+                    ? format(currentMonth, "yyyy")
+                    : format(currentMonth, "MMMM yyyy")}
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => navigateMonth("next")}
+                onClick={() => {
+                  if (calendarView === "years") {
+                    setYearRangeStart((prev) => prev + 12);
+                  } else if (calendarView === "months") {
+                    setCurrentMonth(addMonths(currentMonth, 12));
+                  } else {
+                    goToMonth(addMonths(currentMonth, 1));
+                  }
+                }}
                 disabled={isLoading}
               >
                 <ChevronRight className="h-4 w-4" />
@@ -339,28 +372,13 @@ export function CalendarDashboard({
             <Button
               variant="outline"
               size="sm"
-              onClick={async () => {
+              onClick={() => {
                 const today = new Date();
                 const todayMonth = startOfMonth(today);
                 setSelectedDate(today);
+                setCalendarView("days");
                 if (!isSameMonth(currentMonth, today)) {
-                  setCurrentMonth(todayMonth);
-                  setIsLoading(true);
-                  try {
-                    const monthParam = format(todayMonth, "yyyy-MM");
-                    const res = await fetch(
-                      `/api/v1/calendar/appointments?month=${monthParam}`
-                    );
-                    if (res.ok) {
-                      const data = await res.json();
-                      setAppointments(data.appointments);
-                      setStats(data.stats);
-                    }
-                  } catch (error) {
-                    console.error("Failed to fetch appointments:", error);
-                  } finally {
-                    setIsLoading(false);
-                  }
+                  goToMonth(todayMonth);
                 }
               }}
             >
@@ -373,6 +391,59 @@ export function CalendarDashboard({
                 {Array.from({ length: 7 }).map((_, i) => (
                   <Skeleton key={i} className="h-12 w-full" />
                 ))}
+              </div>
+            ) : calendarView === "years" ? (
+              <div className="grid grid-cols-4 gap-2 py-4">
+                {(() => {
+                  const now = new Date();
+                  return Array.from({ length: 12 }, (_, i) => yearRangeStart + i).map(
+                    (year) => (
+                      <button
+                        key={year}
+                        onClick={() => {
+                          setCurrentMonth(
+                            startOfMonth(
+                              new Date(year, currentMonth.getMonth())
+                            )
+                          );
+                          setCalendarView("months");
+                        }}
+                        className={cn(
+                          "rounded-md py-4 text-sm font-medium transition-colors hover:bg-muted",
+                          year === now.getFullYear() && "ring-2 ring-primary"
+                        )}
+                      >
+                        {year}
+                      </button>
+                    )
+                  );
+                })()}
+              </div>
+            ) : calendarView === "months" ? (
+              <div className="grid grid-cols-4 gap-2 py-4">
+                {(() => {
+                  const now = new Date();
+                  return MONTH_NAMES.map((name, index) => (
+                    <button
+                      key={name}
+                      onClick={() =>
+                        goToMonth(
+                          startOfMonth(
+                            new Date(currentMonth.getFullYear(), index)
+                          )
+                        )
+                      }
+                      className={cn(
+                        "rounded-md py-4 text-sm font-medium transition-colors hover:bg-muted",
+                        index === now.getMonth() &&
+                          currentMonth.getFullYear() === now.getFullYear() &&
+                          "ring-2 ring-primary"
+                      )}
+                    >
+                      {name}
+                    </button>
+                  ));
+                })()}
               </div>
             ) : (
               <div>

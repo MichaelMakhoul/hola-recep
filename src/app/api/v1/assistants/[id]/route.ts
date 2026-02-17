@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getVapiClient, ensureCalendarTools, buildVapiServerConfig } from "@/lib/vapi";
-import { buildAnalysisPlan, buildPromptFromConfig, promptConfigSchema } from "@/lib/prompt-builder";
+import { buildAnalysisPlan, buildPromptFromConfig, buildSchedulingSection, promptConfigSchema } from "@/lib/prompt-builder";
+import type { PromptContext } from "@/lib/prompt-builder";
 import { RECORDING_DECLINE_SYSTEM_INSTRUCTION, buildFirstMessageWithDisclosure, resolveRecordingSettings } from "@/lib/templates";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
+import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
 
@@ -174,6 +176,10 @@ export async function PATCH(
           ? validatedData.promptConfig
           : currentAssistant.prompt_config;
 
+        // Fetch org timezone and business hours for prompt context
+        const { timezone: orgTimezone, businessHours: orgBusinessHours } =
+          await getOrgScheduleContext(supabase, membership.organization_id, "assistant update");
+
         const aggregatedKB = await getAggregatedKnowledgeBase(
           supabase,
           membership.organization_id
@@ -183,17 +189,24 @@ export async function PATCH(
         if (promptConfig) {
           const config = promptConfig as PromptConfig;
           const industry = mergedSettings.industry || "other";
-          vapiSystemPrompt = buildPromptFromConfig(config, {
+          const promptContext: PromptContext = {
             businessName: validatedData.name || currentAssistant.name,
             industry,
             knowledgeBase: aggregatedKB || undefined,
-          });
-        } else if (aggregatedKB) {
-          if (rawPrompt.includes("{knowledge_base}")) {
-            vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
-          } else {
-            vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
+            timezone: orgTimezone,
+            businessHours: orgBusinessHours,
+          };
+          vapiSystemPrompt = buildPromptFromConfig(config, promptContext);
+        } else {
+          if (aggregatedKB) {
+            if (rawPrompt.includes("{knowledge_base}")) {
+              vapiSystemPrompt = rawPrompt.replace(/{knowledge_base}/g, aggregatedKB);
+            } else {
+              vapiSystemPrompt = `${rawPrompt}\n\nBusiness Information:\n${aggregatedKB}`;
+            }
           }
+          // For legacy prompts, append scheduling context
+          vapiSystemPrompt += `\n\n${buildSchedulingSection(orgTimezone, orgBusinessHours)}`;
         }
 
         // When recording is on, instruct the AI to handle opt-out requests

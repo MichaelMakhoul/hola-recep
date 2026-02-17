@@ -9,6 +9,7 @@ import {
   handleBookAppointment,
   handleCheckAvailability,
   handleCancelAppointment,
+  handleGetCurrentDatetime,
 } from "@/lib/calendar/tool-handlers";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 
@@ -697,6 +698,9 @@ export async function POST(request: Request) {
               break;
             case "cancel_appointment":
               result = await handleCancelAppointment(organizationId, args);
+              break;
+            case "get_current_datetime":
+              result = await handleGetCurrentDatetime(organizationId);
               break;
             default:
               console.log("Unknown tool call:", toolCall.function.name);
