@@ -35,6 +35,18 @@ describe("appointment duration in prompts", () => {
       expect(section).toContain("CRITICAL:");
       expect(section).toContain("get_current_datetime");
     });
+
+    it("should include both business hours and duration when both are provided", () => {
+      const hours = {
+        monday: { open: "09:00", close: "17:00" },
+        tuesday: null,
+      };
+      const section = buildSchedulingSection("America/New_York", hours, 60);
+      expect(section).toContain("Monday: 9 AM");
+      expect(section).toContain("Closed");
+      expect(section).toContain("Standard appointment duration is 60 minutes.");
+      expect(section).toContain("Do NOT suggest appointment times outside");
+    });
   });
 
   describe("buildPromptFromConfig with duration context", () => {

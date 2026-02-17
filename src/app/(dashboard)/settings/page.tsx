@@ -86,7 +86,7 @@ export default async function SettingsPage() {
           address: organization.business_address || "",
           timezone: organization.timezone || "America/New_York",
           businessHours: organization.business_hours || null,
-          defaultAppointmentDuration: organization.default_appointment_duration || 30,
+          defaultAppointmentDuration: organization.default_appointment_duration ?? 30,
         }}
       />
 
