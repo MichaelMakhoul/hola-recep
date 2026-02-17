@@ -177,8 +177,11 @@ export async function PATCH(
           : currentAssistant.prompt_config;
 
         // Fetch org timezone, business hours, and appointment duration for prompt context
-        const { timezone: orgTimezone, businessHours: orgBusinessHours, defaultAppointmentDuration } =
-          await getOrgScheduleContext(supabase, membership.organization_id, "assistant update");
+        const {
+          timezone: orgTimezone,
+          businessHours: orgBusinessHours,
+          defaultAppointmentDuration,
+        } = await getOrgScheduleContext(supabase, membership.organization_id, "assistant update");
 
         const aggregatedKB = await getAggregatedKnowledgeBase(
           supabase,

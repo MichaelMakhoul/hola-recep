@@ -372,6 +372,11 @@ export function BusinessSettingsForm({
                   {d.label}
                 </SelectItem>
               ))}
+              {!APPOINTMENT_DURATIONS.some((d) => d.value === String(appointmentDuration)) && (
+                <SelectItem value={String(appointmentDuration)}>
+                  {appointmentDuration} minutes
+                </SelectItem>
+              )}
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
