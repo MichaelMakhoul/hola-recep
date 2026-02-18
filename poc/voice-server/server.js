@@ -14,6 +14,7 @@ const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
+const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
 
 // Validate required env vars
 for (const key of ["DEEPGRAM_API_KEY", "GROQ_API_KEY", "PUBLIC_URL", "TWILIO_AUTH_TOKEN"]) {
@@ -22,6 +23,16 @@ for (const key of ["DEEPGRAM_API_KEY", "GROQ_API_KEY", "PUBLIC_URL", "TWILIO_AUT
     process.exit(1);
   }
 }
+
+// Global error handlers to prevent silent crashes
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught exception:", err);
+  process.exit(1);
+});
 
 // Pending tokens: issued at /twiml, consumed at WebSocket start. Expire after 30s.
 const pendingTokens = new Map();
@@ -36,13 +47,22 @@ function issueStreamToken() {
 }
 
 function verifyStreamToken(token) {
-  if (!pendingTokens.has(token)) return false;
-  const issuedAt = pendingTokens.get(token);
-  pendingTokens.delete(token); // single-use
-  if (Date.now() - issuedAt > TOKEN_TTL_MS) return false;
-  const [ts, hmac] = token.split(".");
-  const expected = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(expected));
+  try {
+    if (!pendingTokens.has(token)) return false;
+    const issuedAt = pendingTokens.get(token);
+    pendingTokens.delete(token); // single-use
+    if (Date.now() - issuedAt > TOKEN_TTL_MS) return false;
+    const [ts, hmac] = token.split(".");
+    if (!ts || !hmac) return false;
+    const expected = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
+    const hmacBuf = Buffer.from(hmac);
+    const expectedBuf = Buffer.from(expected);
+    if (hmacBuf.length !== expectedBuf.length) return false;
+    return crypto.timingSafeEqual(hmacBuf, expectedBuf);
+  } catch (err) {
+    console.error("[Auth] Token verification error:", err);
+    return false;
+  }
 }
 
 // Clean up expired tokens every 60s
@@ -58,14 +78,13 @@ app.use(express.urlencoded({ extended: false }));
 
 // TwiML endpoint — tells Twilio to connect a bidirectional media stream
 app.post("/twiml", (req, res) => {
-  const wsUrl = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
   const token = issueStreamToken();
-  console.log(`[TwiML] Incoming call, streaming to ${wsUrl}`);
+  console.log(`[TwiML] Incoming call, streaming to ${WS_URL}`);
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}">
+    <Stream url="${WS_URL}">
       <Parameter name="auth_token" value="${token}" />
     </Stream>
   </Connect>
@@ -86,81 +105,110 @@ const sessions = new Map();
 wss.on("connection", (twilioWs) => {
   let session = null;
 
-  twilioWs.on("message", async (raw) => {
-    const msg = JSON.parse(raw);
-
-    switch (msg.event) {
-      case "connected":
-        console.log("[Twilio] WebSocket connected");
-        break;
-
-      case "start": {
-        const { callSid, streamSid, customParameters } = msg.start;
-        const token = customParameters && customParameters.auth_token;
-        if (!token || !verifyStreamToken(token)) {
-          console.warn(`[Auth] Rejected WebSocket — invalid or missing token (callSid=${callSid})`);
-          twilioWs.close();
-          return;
-        }
-
-        session = new CallSession(callSid);
-        session.streamSid = streamSid;
-        sessions.set(streamSid, session);
-        console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid}`);
-
-        // Open Deepgram STT WebSocket
-        session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
-          onTranscript: ({ transcript, isFinal }) => {
-            if (!isFinal) return;
-            console.log(`[STT] Final: "${transcript}"`);
-            handleUserSpeech(session, twilioWs, transcript);
-          },
-          onError: (err) => {
-            console.error("[STT] Error:", err.message);
-          },
-        });
-
-        // Send greeting after STT is ready
-        await sendTTS(session, twilioWs, "Hello! Thanks for calling. How can I help you today?");
-        break;
-      }
-
-      case "media": {
-        if (!session || !session.deepgramWs) break;
-        // Forward raw mulaw audio to Deepgram (no conversion needed)
-        const audio = Buffer.from(msg.media.payload, "base64");
-        if (session.deepgramWs.readyState === WebSocket.OPEN) {
-          session.deepgramWs.send(audio);
-        }
-        break;
-      }
-
-      case "mark": {
-        // TTS playback finished for a marked chunk
-        if (session && msg.mark && msg.mark.name === "tts-done") {
-          session.isSpeaking = false;
-        }
-        break;
-      }
-
-      case "stop": {
-        if (session) {
-          console.log(`[Twilio] Stream stopped — callSid=${session.callSid}`);
-          sessions.delete(session.streamSid);
-          session.destroy();
-          session = null;
-        }
-        break;
-      }
-    }
-  });
-
-  twilioWs.on("close", () => {
+  function cleanupSession() {
     if (session) {
       sessions.delete(session.streamSid);
       session.destroy();
       session = null;
     }
+  }
+
+  twilioWs.on("message", async (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (err) {
+      console.warn("[Twilio] Received non-JSON message, ignoring");
+      return;
+    }
+
+    try {
+      switch (msg.event) {
+        case "connected":
+          console.log("[Twilio] WebSocket connected");
+          break;
+
+        case "start": {
+          const { callSid, streamSid, customParameters } = msg.start;
+          const token = customParameters?.auth_token;
+          if (!token || !verifyStreamToken(token)) {
+            console.warn(`[Auth] Rejected WebSocket — invalid or missing token (callSid=${callSid})`);
+            twilioWs.close();
+            return;
+          }
+
+          session = new CallSession(callSid);
+          session.streamSid = streamSid;
+          sessions.set(streamSid, session);
+          console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid}`);
+
+          // Open Deepgram STT WebSocket
+          session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+            onTranscript: ({ transcript, isFinal }) => {
+              if (!isFinal) return;
+              console.log(`[STT] Final: "${transcript}"`);
+              handleUserSpeech(session, twilioWs, transcript);
+            },
+            onError: (err) => {
+              console.error("[STT] Error:", err);
+              sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.").catch(() => {});
+            },
+            onClose: (code) => {
+              if (code !== 1000 && code !== 1005 && session) {
+                console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
+              }
+            },
+          });
+
+          // Send greeting
+          const greeting = "Hello! Thanks for calling. How can I help you today?";
+          try {
+            await sendTTS(session, twilioWs, greeting);
+            session.addMessage("assistant", greeting);
+          } catch (err) {
+            console.error("[TTS] Failed to send greeting:", err);
+          }
+          break;
+        }
+
+        case "media": {
+          if (!session || !session.deepgramWs) break;
+          // Forward raw mulaw audio to Deepgram (no conversion needed)
+          const audio = Buffer.from(msg.media.payload, "base64");
+          if (session.deepgramWs.readyState === WebSocket.OPEN) {
+            session.deepgramWs.send(audio);
+          } else if (!session._sttDropWarned) {
+            console.warn(`[STT] Dropping audio — Deepgram WebSocket not open (state=${session.deepgramWs.readyState}, callSid=${session.callSid})`);
+            session._sttDropWarned = true;
+          }
+          break;
+        }
+
+        case "mark": {
+          // TTS playback finished for a marked chunk
+          if (session && msg.mark && msg.mark.name === "tts-done") {
+            session.isSpeaking = false;
+          }
+          break;
+        }
+
+        case "stop": {
+          console.log(`[Twilio] Stream stopped — callSid=${session?.callSid}`);
+          cleanupSession();
+          break;
+        }
+      }
+    } catch (err) {
+      console.error(`[Twilio] Error handling event="${msg.event}" callSid=${session?.callSid}:`, err);
+    }
+  });
+
+  twilioWs.on("error", (err) => {
+    console.error(`[Twilio] WebSocket error (callSid=${session?.callSid}):`, err);
+  });
+
+  twilioWs.on("close", () => {
+    cleanupSession();
   });
 });
 
@@ -187,7 +235,16 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     session.addMessage("assistant", reply);
     await sendTTS(session, twilioWs, reply);
   } catch (err) {
-    console.error("[Pipeline] Error:", err.message);
+    console.error("[Pipeline] Error:", err);
+    // Remove the user message that never got a reply
+    if (session.messages.length > 0 && session.messages[session.messages.length - 1].role === "user") {
+      session.messages.pop();
+    }
+    try {
+      await sendTTS(session, twilioWs, "I'm sorry, I'm having a little trouble right now. Could you repeat that?");
+    } catch (ttsErr) {
+      console.error("[Pipeline] Failed to send error message to caller:", ttsErr);
+    }
   } finally {
     session.isProcessing = false;
   }
@@ -244,5 +301,5 @@ function sendClear(session, twilioWs) {
 server.listen(PORT, () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
-  console.log(`WebSocket endpoint: ${PUBLIC_URL.replace(/^http/, "ws")}/ws/audio`);
+  console.log(`WebSocket endpoint: ${WS_URL}`);
 });

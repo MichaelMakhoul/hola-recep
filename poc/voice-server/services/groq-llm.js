@@ -28,7 +28,17 @@ async function getChatResponse(apiKey, messages) {
   }
 
   const data = await res.json();
-  return data.choices[0].message.content;
+
+  if (!data.choices || data.choices.length === 0) {
+    throw new Error(`Groq returned no choices (finish_reason: ${data.choices?.[0]?.finish_reason ?? "unknown"})`);
+  }
+
+  const content = data.choices[0].message?.content;
+  if (!content) {
+    throw new Error(`Groq returned empty content (finish_reason: ${data.choices[0].finish_reason ?? "unknown"})`);
+  }
+
+  return content;
 }
 
 module.exports = { getChatResponse };

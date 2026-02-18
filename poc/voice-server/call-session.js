@@ -1,3 +1,7 @@
+const { WebSocket } = require("ws");
+
+const MAX_MESSAGES = 21; // system prompt + 10 turn pairs
+
 class CallSession {
   constructor(callSid) {
     this.callSid = callSid;
@@ -15,14 +19,19 @@ class CallSession {
     this.isSpeaking = false;
     this.isProcessing = false;
     this.deepgramWs = null;
+    this._sttDropWarned = false;
   }
 
   addMessage(role, content) {
     this.messages.push({ role, content });
+    // Sliding window: keep system prompt + last N messages
+    if (this.messages.length > MAX_MESSAGES) {
+      this.messages = [this.messages[0], ...this.messages.slice(-MAX_MESSAGES + 1)];
+    }
   }
 
   destroy() {
-    if (this.deepgramWs && this.deepgramWs.readyState === 1) {
+    if (this.deepgramWs && this.deepgramWs.readyState === WebSocket.OPEN) {
       this.deepgramWs.close();
     }
     this.deepgramWs = null;
