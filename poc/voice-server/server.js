@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const crypto = require("crypto");
 const express = require("express");
 const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
@@ -12,14 +13,45 @@ const PORT = process.env.PORT || 3001;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const PUBLIC_URL = process.env.PUBLIC_URL;
+const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 
 // Validate required env vars
-for (const key of ["DEEPGRAM_API_KEY", "GROQ_API_KEY", "PUBLIC_URL"]) {
+for (const key of ["DEEPGRAM_API_KEY", "GROQ_API_KEY", "PUBLIC_URL", "TWILIO_AUTH_TOKEN"]) {
   if (!process.env[key]) {
     console.error(`Missing required env var: ${key}`);
     process.exit(1);
   }
 }
+
+// Pending tokens: issued at /twiml, consumed at WebSocket start. Expire after 30s.
+const pendingTokens = new Map();
+const TOKEN_TTL_MS = 30_000;
+
+function issueStreamToken() {
+  const ts = Date.now().toString();
+  const hmac = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
+  const token = `${ts}.${hmac}`;
+  pendingTokens.set(token, Date.now());
+  return token;
+}
+
+function verifyStreamToken(token) {
+  if (!pendingTokens.has(token)) return false;
+  const issuedAt = pendingTokens.get(token);
+  pendingTokens.delete(token); // single-use
+  if (Date.now() - issuedAt > TOKEN_TTL_MS) return false;
+  const [ts, hmac] = token.split(".");
+  const expected = crypto.createHmac("sha256", WS_SECRET).update(ts).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(expected));
+}
+
+// Clean up expired tokens every 60s
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, issuedAt] of pendingTokens) {
+    if (now - issuedAt > TOKEN_TTL_MS) pendingTokens.delete(token);
+  }
+}, 60_000).unref();
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -27,12 +59,15 @@ app.use(express.urlencoded({ extended: false }));
 // TwiML endpoint — tells Twilio to connect a bidirectional media stream
 app.post("/twiml", (req, res) => {
   const wsUrl = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
+  const token = issueStreamToken();
   console.log(`[TwiML] Incoming call, streaming to ${wsUrl}`);
 
   res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}" />
+    <Stream url="${wsUrl}">
+      <Parameter name="auth_token" value="${token}" />
+    </Stream>
   </Connect>
 </Response>`);
 });
@@ -60,7 +95,14 @@ wss.on("connection", (twilioWs) => {
         break;
 
       case "start": {
-        const { callSid, streamSid } = msg.start;
+        const { callSid, streamSid, customParameters } = msg.start;
+        const token = customParameters && customParameters.auth_token;
+        if (!token || !verifyStreamToken(token)) {
+          console.warn(`[Auth] Rejected WebSocket — invalid or missing token (callSid=${callSid})`);
+          twilioWs.close();
+          return;
+        }
+
         session = new CallSession(callSid);
         session.streamSid = streamSid;
         sessions.set(streamSid, session);
