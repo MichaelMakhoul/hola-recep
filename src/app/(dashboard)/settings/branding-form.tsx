@@ -47,7 +47,8 @@ export function BrandingForm({
       if (error) throw error;
 
       toast({ title: "Branding updated", description: "Your branding settings have been saved." });
-    } catch {
+    } catch (error) {
+      console.error("[BrandingForm] Failed to save branding settings:", error);
       toast({ title: "Error", description: "Failed to save branding settings.", variant: "destructive" });
     } finally {
       setSaving(false);

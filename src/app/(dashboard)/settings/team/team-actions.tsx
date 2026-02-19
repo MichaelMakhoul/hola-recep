@@ -27,8 +27,6 @@ import { Loader2, Plus } from "lucide-react";
 
 interface TeamActionsProps {
   organizationId: string;
-  isAdmin: boolean;
-  currentUserId: string;
   members: Array<{
     id: string;
     role: string;
@@ -70,17 +68,21 @@ export function TeamActions({
           description: "This person is already part of your team.",
           variant: "destructive",
         });
-        setLoading(false);
         return;
       }
 
-      // Look up user by email
+      // Look up user by email in user_profiles (subject to RLS)
       const supabase = createClient();
-      const { data: profile } = await (supabase as any)
+      const { data: profile, error: lookupError } = await (supabase as any)
         .from("user_profiles")
         .select("id")
         .eq("email", email.trim().toLowerCase())
         .single();
+
+      if (lookupError && lookupError.code !== "PGRST116") {
+        console.error("[TeamActions] Profile lookup failed:", lookupError);
+        throw lookupError;
+      }
 
       if (!profile) {
         toast({
@@ -88,7 +90,6 @@ export function TeamActions({
           description: "This email is not registered. They need to sign up first.",
           variant: "destructive",
         });
-        setLoading(false);
         return;
       }
 
@@ -118,7 +119,8 @@ export function TeamActions({
         setInviteOpen(false);
         router.refresh();
       }
-    } catch {
+    } catch (error) {
+      console.error("[TeamActions] Failed to invite team member:", error);
       toast({
         title: "Error",
         description: "Failed to add team member. Please try again.",
@@ -134,16 +136,22 @@ export function TeamActions({
     setRemoving(true);
     try {
       const supabase = createClient();
-      const { error } = await (supabase as any)
+      const { data, error } = await (supabase as any)
         .from("org_members")
         .delete()
-        .eq("id", memberId);
+        .eq("id", memberId)
+        .select();
 
       if (error) throw error;
 
-      toast({ title: "Member removed", description: `${memberName} has been removed from your team.` });
+      if (!data || data.length === 0) {
+        toast({ title: "Already removed", description: "This member was already removed from your team." });
+      } else {
+        toast({ title: "Member removed", description: `${memberName} has been removed from your team.` });
+      }
       router.refresh();
-    } catch {
+    } catch (error) {
+      console.error("[TeamActions] Failed to remove member:", memberId, error);
       toast({
         title: "Error",
         description: "Failed to remove team member.",

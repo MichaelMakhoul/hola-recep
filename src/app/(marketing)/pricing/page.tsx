@@ -1,6 +1,6 @@
 import { Metadata } from "next";
 import Link from "next/link";
-import { Check, Phone, Users, Smartphone, Calendar, ArrowRight, Headphones, BarChart3, Mic } from "lucide-react";
+import { Check } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Pricing | Hola Recep",

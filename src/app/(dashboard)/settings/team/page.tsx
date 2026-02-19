@@ -51,7 +51,8 @@ export default async function TeamPage() {
     `)
     .eq("organization_id", membership.organization_id) as { data: TeamMember[] | null } : { data: null };
 
-  const isAdmin = membership?.role === "owner" || membership?.role === "admin";
+  const isOwner = membership?.role === "owner";
+  const isAdmin = isOwner || membership?.role === "admin";
 
   return (
     <div className="space-y-6">
@@ -66,8 +67,6 @@ export default async function TeamPage() {
         {isAdmin && membership?.organization_id && (
           <TeamActions
             organizationId={membership.organization_id}
-            isAdmin={isAdmin}
-            currentUserId={user!.id}
             members={(members || []).map((m) => ({
               id: m.id,
               role: m.role,
@@ -95,7 +94,7 @@ export default async function TeamPage() {
                   <TableHead>Member</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Joined</TableHead>
-                  {isAdmin && <TableHead className="text-right">Actions</TableHead>}
+                  {isOwner && <TableHead className="text-right">Actions</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -149,13 +148,11 @@ export default async function TeamPage() {
                       <TableCell>
                         {new Date(member.created_at).toLocaleDateString()}
                       </TableCell>
-                      {isAdmin && (
+                      {isOwner && (
                         <TableCell className="text-right">
                           {member.role !== "owner" && profile.id !== user!.id && (
                             <TeamActions
                               organizationId={membership!.organization_id}
-                              isAdmin={isAdmin}
-                              currentUserId={user!.id}
                               memberId={member.id}
                               memberName={profile.full_name || profile.email}
                               showRemoveOnly

@@ -48,18 +48,31 @@ export function DeleteAccountCard({
     try {
       const supabase = createClient();
 
-      // Delete organization (cascading deletes handle assistants, calls, etc.)
-      const { error } = await (supabase as any)
+      // Delete organization — ON DELETE CASCADE in the DB schema handles child tables.
+      // NOTE: External resources (Vapi assistants, provisioned phone numbers, Stripe subscriptions)
+      // are NOT cleaned up here and should be handled by a server-side cleanup job.
+      const { data, error } = await (supabase as any)
         .from("organizations")
         .delete()
-        .eq("id", organizationId);
+        .eq("id", organizationId)
+        .select();
 
       if (error) throw error;
 
-      // Sign out and redirect
-      await supabase.auth.signOut();
+      if (!data || data.length === 0) {
+        throw new Error("Organization deletion was not applied — you may not have permission.");
+      }
+
+      // Delete succeeded — sign out is best-effort
+      try {
+        await supabase.auth.signOut();
+      } catch (signOutError) {
+        console.error("[DeleteAccountCard] SignOut failed after successful deletion:", signOutError);
+      }
+
       router.push("/?deleted=true");
-    } catch {
+    } catch (error) {
+      console.error("[DeleteAccountCard] Failed to delete organization:", organizationId, error);
       toast({
         title: "Error",
         description: "Failed to delete account. Please contact support.",
@@ -86,7 +99,10 @@ export function DeleteAccountCard({
               cannot be undone.
             </p>
           </div>
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={(isOpen) => {
+            setOpen(isOpen);
+            if (!isOpen) setConfirmText("");
+          }}>
             <DialogTrigger asChild>
               <Button variant="destructive">Delete Account</Button>
             </DialogTrigger>
