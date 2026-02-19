@@ -27,7 +27,7 @@ async function getChatResponse(apiKey, messages, options) {
   });
 
   if (!res.ok) {
-    const text = await res.text();
+    const text = (await res.text()).slice(0, 500);
     throw new Error(`Groq API error ${res.status}: ${text}`);
   }
 

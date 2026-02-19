@@ -3,6 +3,11 @@
  * and legacy prompt handling from src/lib/knowledge-base/aggregate.ts.
  *
  * Only includes functions needed at runtime (no Zod, no UI presets, no analysis plan).
+ *
+ * Key behavioral difference: the TS version references calendar tool-calling
+ * (get_current_datetime, check_availability, book_appointment) in scheduling
+ * instructions; this JS version replaces those with message-taking guidance
+ * since the self-hosted voice server has no calendar tool integration yet.
  */
 
 const toneDescriptions = {

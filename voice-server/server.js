@@ -10,19 +10,10 @@ const { getChatResponse } = require("./services/groq-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
 const { loadCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
-const { createCallRecord, completeCallRecord, incrementUsage, notifyCallCompleted } = require("./lib/call-logger");
+const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
 const { getSupabase } = require("./lib/supabase");
 
-const PORT = process.env.PORT || 3001;
-const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const PUBLIC_URL = process.env.PUBLIC_URL;
-const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
-const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
-const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
-const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
-
-// Validate required env vars
+// Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
   "GROQ_API_KEY",
@@ -37,6 +28,15 @@ for (const key of REQUIRED_ENV) {
     process.exit(1);
   }
 }
+
+const PORT = process.env.PORT || 3001;
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const PUBLIC_URL = process.env.PUBLIC_URL;
+const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
+const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
+const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
+const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 
 if (!INTERNAL_API_URL || !INTERNAL_API_SECRET) {
   console.warn("[Startup] INTERNAL_API_URL or INTERNAL_API_SECRET not set — post-call notifications will be skipped");
@@ -185,50 +185,47 @@ const sessions = new Map();
 
 wss.on("connection", (twilioWs) => {
   let session = null;
+  let cleaningUp = false;
 
   async function cleanupSession() {
-    if (!session) return;
+    if (!session || cleaningUp) return;
+    cleaningUp = true;
     const s = session;
     session = null;
     sessions.delete(s.streamSid);
 
-    // Post-call processing
-    if (s.callRecordId) {
-      const transcript = s.getTranscript();
-      const durationSeconds = s.getDurationSeconds();
+    const transcript = s.getTranscript();
+    const durationSeconds = s.getDurationSeconds();
+    const callStatus = s.callFailed ? "failed" : "completed";
+    const endedReason = s.endedReason || "caller-hangup";
 
+    // Complete call record if we have one
+    if (s.callRecordId) {
       try {
         await completeCallRecord(s.callRecordId, {
-          status: "completed",
+          status: callStatus,
           durationSeconds,
           transcript,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
       }
+    }
 
-      // Increment billing usage
-      if (s.organizationId) {
-        incrementUsage(s.organizationId).catch((err) =>
-          console.error("[Cleanup] Failed to increment usage:", err)
-        );
-      }
-
-      // Notify the Next.js app for spam analysis, notifications, webhooks (fire-and-forget)
-      if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
-        notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
-          callId: s.callRecordId,
-          organizationId: s.organizationId,
-          assistantId: s.assistantId,
-          callerPhone: s.callerPhone,
-          status: "completed",
-          durationSeconds,
-          transcript,
-          endedReason: "caller-hangup",
-        }).catch((err) =>
-          console.error("[Cleanup] Failed to notify call completed:", err)
-        );
-      }
+    // Notify the Next.js app for spam analysis, billing, notifications, webhooks
+    if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
+      notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
+        callId: s.callRecordId,
+        organizationId: s.organizationId,
+        assistantId: s.assistantId,
+        callerPhone: s.callerPhone,
+        status: callStatus,
+        durationSeconds,
+        transcript,
+        endedReason,
+      }).catch((err) =>
+        console.error("[Cleanup] Failed to notify call completed:", err)
+      );
     }
 
     s.destroy();
@@ -283,7 +280,9 @@ wss.on("connection", (twilioWs) => {
             console.warn(`[Context] No context found for ${calledNumber} — sending fallback and closing`);
             try {
               await sendTTS(session, twilioWs, "Sorry, this number is not currently configured. Please try again later.");
-            } catch (e) { /* best effort */ }
+            } catch (ttsErr) {
+              console.error("[Context] Failed to send fallback message — caller heard silence before disconnect:", ttsErr);
+            }
             twilioWs.close();
             return;
           }
@@ -326,7 +325,13 @@ wss.on("connection", (twilioWs) => {
             },
             onError: (err) => {
               console.error("[STT] Error:", err);
-              sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.").catch(() => {});
+              if (session) {
+                session.callFailed = true;
+                session.endedReason = "stt-error";
+              }
+              sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.").catch((ttsErr) => {
+                console.error("[STT] Failed to send error message to caller:", ttsErr);
+              });
             },
             onClose: (code) => {
               if (code !== 1000 && code !== 1005 && session) {
@@ -383,7 +388,9 @@ wss.on("connection", (twilioWs) => {
   });
 
   twilioWs.on("close", () => {
-    cleanupSession();
+    cleanupSession().catch((err) => {
+      console.error("[Cleanup] Unhandled error in session cleanup:", err);
+    });
   });
 });
 
@@ -409,8 +416,8 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     });
     console.log(`[LLM] (${Date.now() - t0}ms) "${reply}"`);
 
-    session.addMessage("assistant", reply);
     await sendTTS(session, twilioWs, reply);
+    session.addMessage("assistant", reply);
   } catch (err) {
     console.error("[Pipeline] Error:", err);
     // Remove the user message that never got a reply

@@ -2,8 +2,8 @@ const { getSupabase } = require("./supabase");
 
 /**
  * Create a call record when the call starts.
- * Uses Twilio CallSid as vapi_call_id (the column is NOT NULL UNIQUE
- * and serves as the external call identifier for both Vapi and self-hosted calls).
+ * Stores the Twilio CallSid prefixed with "sh_" in the vapi_call_id column
+ * (NOT NULL UNIQUE) to distinguish self-hosted calls from Vapi-originated ones.
  *
  * @returns {Promise<string|null>} The call record UUID, or null on failure
  */
@@ -39,6 +39,7 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
 
 /**
  * Update the call record when the call ends.
+ * Throws on failure so the caller can handle it.
  */
 async function completeCallRecord(callId, { status, durationSeconds, transcript }) {
   const supabase = getSupabase();
@@ -57,16 +58,14 @@ async function completeCallRecord(callId, { status, durationSeconds, transcript 
     .eq("id", callId);
 
   if (error) {
-    console.error("[CallLogger] Failed to complete call record:", {
-      callId,
-      error,
-    });
+    throw new Error(`Failed to complete call record ${callId}: ${error.message}`);
   }
 }
 
 /**
  * Increment call usage for billing.
- * Uses the atomic RPC function with fallback, matching billing-service.ts.
+ * Uses the same atomic RPC + error-code fallback pattern as billing-service.ts,
+ * but simplified: no shouldUpgrade check or return value.
  */
 async function incrementUsage(orgId) {
   const supabase = getSupabase();
@@ -79,22 +78,31 @@ async function incrementUsage(orgId) {
   if (error && (error.code === "42883" || error.code === "PGRST202")) {
     console.warn("[CallLogger] increment_call_usage RPC not found, using fallback");
 
-    const { data: subscription } = await supabase
+    const { data: subscription, error: selectError } = await supabase
       .from("subscriptions")
       .select("id, calls_used, calls_limit")
       .eq("organization_id", orgId)
       .single();
 
-    if (!subscription) {
-      console.error("[CallLogger] No subscription found for org:", orgId);
+    if (selectError || !subscription) {
+      console.error("[CallLogger] No subscription found for org:", { orgId, error: selectError });
       return;
     }
 
     const newUsage = (subscription.calls_used || 0) + 1;
-    await supabase
+    const { error: updateError } = await supabase
       .from("subscriptions")
       .update({ calls_used: newUsage })
       .eq("id", subscription.id);
+
+    if (updateError) {
+      console.error("[CallLogger] Failed to update subscription usage (billing may be inaccurate):", {
+        orgId,
+        subscriptionId: subscription.id,
+        attemptedUsage: newUsage,
+        error: updateError,
+      });
+    }
 
     return;
   }
@@ -106,8 +114,8 @@ async function incrementUsage(orgId) {
 
 /**
  * POST to the Next.js internal endpoint for post-call processing
- * (spam analysis, notifications, webhook delivery).
- * Fire-and-forget — errors are logged but don't block the caller.
+ * (spam analysis, billing, notifications, webhook delivery).
+ * Called with .catch() at the call site for fire-and-forget behavior.
  */
 async function notifyCallCompleted(internalApiUrl, secret, payload) {
   try {
@@ -121,7 +129,7 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
     });
 
     if (!res.ok) {
-      const text = await res.text();
+      const text = (await res.text()).slice(0, 500);
       console.error("[CallLogger] Internal API error:", { status: res.status, body: text });
     }
   } catch (err) {

@@ -7,10 +7,14 @@ import {
   sendFailedCallNotification,
 } from "@/lib/notifications/notification-service";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
+import { withRateLimit } from "@/lib/security/rate-limiter";
 
 function verifyInternalSecret(request: Request): boolean {
   const secret = process.env.INTERNAL_API_SECRET;
-  if (!secret) return false;
+  if (!secret) {
+    console.error("[Internal] INTERNAL_API_SECRET is not configured — all internal API requests will be rejected");
+    return false;
+  }
 
   const headerSecret = request.headers.get("X-Internal-Secret");
   if (!headerSecret) return false;
@@ -23,7 +27,7 @@ function verifyInternalSecret(request: Request): boolean {
 }
 
 interface CallCompletedPayload {
-  callId: string;
+  callId: string | null;
   organizationId: string;
   assistantId: string;
   callerPhone: string;
@@ -35,9 +39,15 @@ interface CallCompletedPayload {
 
 /**
  * Internal endpoint called by the self-hosted voice server after a call ends.
- * Runs spam analysis, updates call record, sends notifications, and delivers webhooks.
+ * Runs spam analysis, updates call record, increments billing, sends notifications, and delivers webhooks.
  */
 export async function POST(request: Request) {
+  // Rate limit
+  const { allowed, headers: rlHeaders } = withRateLimit(request, "/api/internal/call-completed", "webhook");
+  if (!allowed) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429, headers: rlHeaders });
+  }
+
   if (!verifyInternalSecret(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -60,14 +70,15 @@ export async function POST(request: Request) {
     endedReason,
   } = payload;
 
-  if (!callId || !organizationId) {
-    return NextResponse.json({ error: "Missing callId or organizationId" }, { status: 400 });
+  if (!organizationId) {
+    return NextResponse.json({ error: "Missing organizationId" }, { status: 400 });
   }
 
   const supabase = createAdminClient();
 
   // 1. Run spam analysis
   let spamAnalysis = null;
+  let spamAnalysisFailed = false;
   if (callerPhone) {
     const spamMetadata: CallMetadata = {
       callerPhone,
@@ -86,19 +97,28 @@ export async function POST(request: Request) {
         recommendation: spamAnalysis.recommendation,
       });
     } catch (err) {
-      console.error("[Internal] Spam analysis failed:", err);
+      console.error("[Internal] Spam analysis failed — call will be treated as non-spam:", err);
+      spamAnalysisFailed = true;
     }
   }
 
-  // 2. Update call record with spam results
-  if (spamAnalysis) {
+  // 2. Update call record with spam results (merge metadata, don't overwrite)
+  if (callId && spamAnalysis) {
+    // Read existing metadata first to merge
+    const { data: existingCall } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+
+    const existingMetadata = existingCall?.metadata || {};
     const { error: updateError } = await (supabase as any)
       .from("calls")
       .update({
         is_spam: spamAnalysis.isSpam,
         spam_score: spamAnalysis.spamScore,
         metadata: {
-          voice_provider: "self_hosted",
+          ...existingMetadata,
           endedReason,
           spamAnalysis: {
             reasons: spamAnalysis.reasons,
@@ -110,17 +130,54 @@ export async function POST(request: Request) {
       .eq("id", callId);
 
     if (updateError) {
-      console.error("[Internal] Failed to update call with spam data:", updateError);
+      console.error("[Internal] Failed to update call with spam data:", { callId, error: updateError });
     }
   }
 
-  // 3. Send notifications (skip spam calls)
+  // 3. Increment billing (skip spam calls, matching Vapi flow)
+  const shouldTrackUsage = status === "completed" &&
+    (!spamAnalysis?.isSpam || spamAnalysis?.recommendation !== "block");
+
+  if (shouldTrackUsage) {
+    try {
+      const { data: result, error: rpcError } = await (supabase as any).rpc("increment_call_usage", {
+        org_id: organizationId,
+      });
+
+      // Fallback if RPC doesn't exist
+      if (rpcError && (rpcError.code === "42883" || rpcError.code === "PGRST202")) {
+        console.warn("[Internal] increment_call_usage RPC not found, using fallback");
+        const { data: subscription } = await (supabase as any)
+          .from("subscriptions")
+          .select("id, calls_used")
+          .eq("organization_id", organizationId)
+          .single();
+
+        if (subscription) {
+          const { error: updateError } = await (supabase as any)
+            .from("subscriptions")
+            .update({ calls_used: (subscription.calls_used || 0) + 1 })
+            .eq("id", subscription.id);
+          if (updateError) {
+            console.error("[Internal] Failed to update subscription usage:", { organizationId, error: updateError });
+          }
+        }
+      } else if (rpcError) {
+        console.error("[Internal] Failed to increment usage:", { organizationId, error: rpcError });
+      }
+    } catch (err) {
+      console.error("[Internal] Billing increment failed:", err);
+    }
+  }
+
+  // 4. Send notifications (skip spam calls)
+  let notificationStatus = "skipped";
   if (!spamAnalysis?.isSpam) {
     try {
       if (status === "failed") {
         await sendFailedCallNotification({
           organizationId,
-          callId,
+          callId: callId || "unknown",
           callerPhone: callerPhone || "Unknown",
           timestamp: new Date(),
           duration: durationSeconds,
@@ -128,38 +185,53 @@ export async function POST(request: Request) {
           failureReason: humanizeEndedReason(endedReason),
           endedReason,
         });
+        notificationStatus = "sent";
       } else if (durationSeconds < 10) {
         // Very short calls are likely missed
         await sendMissedCallNotification({
           organizationId,
-          callId,
+          callId: callId || "unknown",
           callerPhone: callerPhone || "Unknown",
           timestamp: new Date(),
           duration: durationSeconds,
         });
+        notificationStatus = "sent";
       }
     } catch (err) {
-      console.error("[Internal] Failed to send notification:", err);
+      console.error("[Internal] Failed to send notification — business owner will NOT be alerted:", {
+        callId, organizationId, status, error: err,
+      });
+      notificationStatus = "failed";
+    }
+
+    if (spamAnalysisFailed && notificationStatus === "sent") {
+      console.warn("[Internal] Notification sent despite spam analysis failure — may be for a spam call:", { callId });
     }
   }
 
-  // 4. Deliver webhooks to user integrations (fire-and-forget)
+  // 5. Deliver webhooks to user integrations
   let assistantName: string | null = null;
   if (assistantId) {
-    const { data: assistantRecord } = await (supabase as any)
+    const { data: assistantRecord, error: assistantError } = await (supabase as any)
       .from("assistants")
       .select("name")
       .eq("id", assistantId)
       .single();
+    if (assistantError) {
+      console.error("[Internal] Failed to look up assistant name for webhook:", { assistantId, error: assistantError });
+    }
     if (assistantRecord) assistantName = assistantRecord.name;
   }
 
+  // Map "failed" status to "call.missed" webhook event since there is no
+  // "call.failed" event type — from the customer's perspective, a failed
+  // call is functionally equivalent to a missed one.
   const webhookEvent = status === "failed"
     ? "call.missed" as const
     : "call.completed" as const;
 
   deliverWebhooks(organizationId, webhookEvent, {
-    callId,
+    callId: callId || "unknown",
     caller: callerPhone || "Unknown",
     transcript,
     duration: durationSeconds,
@@ -167,7 +239,7 @@ export async function POST(request: Request) {
     outcome: status,
   }).catch((err) => console.error("[Internal] Webhook delivery failed:", err));
 
-  return NextResponse.json({ received: true });
+  return NextResponse.json({ received: true, notificationStatus });
 }
 
 function humanizeEndedReason(endedReason: string | undefined): string {
@@ -181,8 +253,9 @@ function humanizeEndedReason(endedReason: string | undefined): string {
     case "server-error":
       return "The voice server encountered an error processing the call.";
     default:
-      return endedReason
-        ? `The call ended unexpectedly (${endedReason.substring(0, 100)}).`
-        : "The call ended unexpectedly for an unknown reason.";
+      if (!endedReason) return "The call ended unexpectedly for an unknown reason.";
+      // Only use known safe characters in the reason string
+      const safeReason = endedReason.substring(0, 100).replace(/[<>&"']/g, "");
+      return `The call ended unexpectedly (${safeReason}).`;
   }
 }

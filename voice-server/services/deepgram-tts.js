@@ -26,7 +26,7 @@ async function synthesizeSpeech(apiKey, text) {
   });
 
   if (!res.ok) {
-    const errText = await res.text();
+    const errText = (await res.text()).slice(0, 500);
     throw new Error(`Deepgram TTS error ${res.status}: ${errText}`);
   }
 

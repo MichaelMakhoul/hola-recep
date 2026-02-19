@@ -86,7 +86,11 @@ async function loadCallContext(calledNumber) {
             .map((p) => `Q: ${p.question}\nA: ${p.answer}`)
             .join("\n\n");
           sections.push(`## ${heading}\n${qaParts}`);
-        } catch {
+        } catch (parseErr) {
+          console.warn("[CallContext] FAQ entry has malformed JSON — using raw content:", {
+            entryId: entry.id,
+            error: parseErr.message,
+          });
           sections.push(`## ${heading}\n${entry.content}`);
         }
       } else {

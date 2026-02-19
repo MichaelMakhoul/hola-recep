@@ -4,7 +4,8 @@ let client = null;
 
 /**
  * Singleton Supabase admin client using service role key.
- * Mirrors src/lib/supabase/admin.ts in the Next.js app.
+ * Similar to src/lib/supabase/admin.ts in the Next.js app, but uses
+ * SUPABASE_URL (not NEXT_PUBLIC_SUPABASE_URL) since this runs outside Next.js.
  */
 function getSupabase() {
   if (client) return client;

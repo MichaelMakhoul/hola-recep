@@ -1,6 +1,6 @@
 const { WebSocket } = require("ws");
 
-const MAX_MESSAGES = 21; // system prompt + 10 turn pairs
+const MAX_MESSAGES = 21; // system prompt + up to 20 conversation messages (typically 10 turn pairs)
 
 class CallSession {
   constructor(callSid) {
@@ -20,6 +20,8 @@ class CallSession {
     this.assistantId = null;
     this.phoneNumberId = null;
     this.model = null;
+    this.callFailed = false;
+    this.endedReason = null;
   }
 
   /**
