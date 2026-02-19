@@ -9,6 +9,10 @@ const DEFAULT_MODEL = "llama-3.3-70b-versatile";
  * @returns {Promise<string>}
  */
 async function getChatResponse(apiKey, messages, options) {
+  if (!messages || messages.length === 0) {
+    throw new Error("getChatResponse called with empty messages array");
+  }
+
   const model = options?.model || DEFAULT_MODEL;
 
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {

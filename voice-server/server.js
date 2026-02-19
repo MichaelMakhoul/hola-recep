@@ -123,7 +123,7 @@ function consumeStreamToken(token) {
     if (!crypto.timingSafeEqual(hmacBuf, expectedBuf)) return null;
     return { calledNumber: entry.calledNumber, callerPhone: entry.callerPhone };
   } catch (err) {
-    console.error("[Auth] Token verification error:", err);
+    console.error("[Auth] Token verification threw unexpectedly — if this repeats, all calls will be rejected:", err);
     return null;
   }
 }
@@ -441,7 +441,10 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     await sendTTS(session, twilioWs, reply);
     session.addMessage("assistant", reply);
   } catch (err) {
-    console.error("[Pipeline] Error:", err);
+    const errorSource = err.message?.includes("Groq") ? "llm"
+      : err.message?.includes("Deepgram TTS") ? "tts"
+      : "unknown";
+    console.error(`[Pipeline] ${errorSource} error (callSid=${session.callSid}):`, err);
     // Remove the user message that never got a reply
     if (session.messages.length > 0 && session.messages[session.messages.length - 1].role === "user") {
       session.messages.pop();

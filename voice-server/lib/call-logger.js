@@ -65,25 +65,51 @@ async function completeCallRecord(callId, { status, durationSeconds, transcript 
 /**
  * POST to the Next.js internal endpoint for post-call processing
  * (spam analysis, billing, notifications, webhook delivery).
- * Called with .catch() at the call site for fire-and-forget behavior.
+ * Retries up to 2 times on transient failures (5xx, network errors).
+ * Errors are caught internally — this function never throws.
  */
 async function notifyCallCompleted(internalApiUrl, secret, payload) {
-  try {
-    const res = await fetch(`${internalApiUrl}/api/internal/call-completed`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Internal-Secret": secret,
-      },
-      body: JSON.stringify(payload),
-    });
+  const MAX_RETRIES = 2;
 
-    if (!res.ok) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${internalApiUrl}/api/internal/call-completed`, {
+        method: "POST",
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Secret": secret,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) return;
+
       const text = (await res.text()).slice(0, 500);
-      console.error("[CallLogger] Internal API error:", { status: res.status, body: text });
+      if (res.status >= 500 && attempt < MAX_RETRIES) {
+        console.warn(`[CallLogger] Internal API returned ${res.status}, retrying (${attempt + 1}/${MAX_RETRIES}):`, { callId: payload.callId });
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      console.error("[CallLogger] Internal API error — post-call processing lost:", {
+        status: res.status,
+        body: text,
+        callId: payload.callId,
+        organizationId: payload.organizationId,
+      });
+      return;
+    } catch (err) {
+      if (attempt < MAX_RETRIES) {
+        console.warn(`[CallLogger] Network error, retrying (${attempt + 1}/${MAX_RETRIES}):`, err.message);
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      console.error("[CallLogger] Failed to notify after retries — billing, notifications, and webhooks lost:", {
+        callId: payload.callId,
+        organizationId: payload.organizationId,
+        error: err.message,
+      });
     }
-  } catch (err) {
-    console.error("[CallLogger] Failed to notify call completed:", err.message);
   }
 }
 

@@ -9,6 +9,10 @@
  * @returns {Promise<Buffer>} Raw mulaw audio bytes
  */
 async function synthesizeSpeech(apiKey, text) {
+  if (!text || !text.trim()) {
+    throw new Error("synthesizeSpeech called with empty text");
+  }
+
   const url =
     "https://api.deepgram.com/v1/speak?" +
     "model=aura-asteria-en" +
