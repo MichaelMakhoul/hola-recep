@@ -1,0 +1,30 @@
+const { createClient } = require("@supabase/supabase-js");
+
+let client = null;
+
+/**
+ * Singleton Supabase admin client using service role key.
+ * Similar to src/lib/supabase/admin.ts in the Next.js app, but uses
+ * SUPABASE_URL (not NEXT_PUBLIC_SUPABASE_URL) since this runs outside Next.js.
+ */
+function getSupabase() {
+  if (client) return client;
+
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  }
+
+  client = createClient(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+
+  return client;
+}
+
+module.exports = { getSupabase };
