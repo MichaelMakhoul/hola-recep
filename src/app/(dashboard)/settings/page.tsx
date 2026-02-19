@@ -1,18 +1,9 @@
 import { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { BusinessSettingsForm } from "./business-settings-form";
+import { BrandingForm } from "./branding-form";
+import { DeleteAccountCard } from "./delete-account-card";
 
 export const metadata: Metadata = {
   title: "Settings | Hola Recep",
@@ -90,76 +81,17 @@ export default async function SettingsPage() {
         }}
       />
 
-      {/* Branding Settings */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Branding</CardTitle>
-          <CardDescription>
-            Customize how your AI receptionist appears
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="logoUrl">Logo URL</Label>
-              <Input
-                id="logoUrl"
-                defaultValue={organization.logo_url || ""}
-                placeholder="https://example.com/logo.png"
-              />
-              <p className="text-xs text-muted-foreground">
-                Used for email notifications and reports
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="primaryColor">Brand Color</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="primaryColor"
-                  defaultValue={organization.primary_color || "#3B82F6"}
-                  placeholder="#3B82F6"
-                />
-                <div
-                  className="h-10 w-10 rounded-md border flex-shrink-0"
-                  style={{
-                    backgroundColor:
-                      organization.primary_color || "#3B82F6",
-                  }}
-                />
-              </div>
-            </div>
-          </div>
+      <BrandingForm
+        organizationId={organization.id}
+        initialLogoUrl={organization.logo_url || ""}
+        initialPrimaryColor={organization.primary_color || "#3B82F6"}
+      />
 
-          <Separator />
-
-          <div className="flex justify-end">
-            <Button>Save Branding</Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Danger Zone - Only for owners */}
       {membership.role === "owner" && (
-        <Card className="border-destructive">
-          <CardHeader>
-            <CardTitle className="text-destructive">Danger Zone</CardTitle>
-            <CardDescription>
-              Irreversible actions for your account
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Delete Account</p>
-                <p className="text-sm text-muted-foreground">
-                  Permanently delete your business and all its data. This
-                  cannot be undone.
-                </p>
-              </div>
-              <Button variant="destructive">Delete Account</Button>
-            </div>
-          </CardContent>
-        </Card>
+        <DeleteAccountCard
+          organizationId={organization.id}
+          organizationName={organization.name}
+        />
       )}
     </>
   );

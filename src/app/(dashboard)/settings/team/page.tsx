@@ -1,6 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -11,7 +10,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Plus, Users } from "lucide-react";
+import { Users } from "lucide-react";
+import { TeamActions } from "./team-actions";
 
 interface Membership {
   organization_id: string;
@@ -63,11 +63,19 @@ export default async function TeamPage() {
             Manage your team members and their access
           </p>
         </div>
-        {isAdmin && (
-          <Button>
-            <Plus className="mr-2 h-4 w-4" />
-            Invite Member
-          </Button>
+        {isAdmin && membership?.organization_id && (
+          <TeamActions
+            organizationId={membership.organization_id}
+            isAdmin={isAdmin}
+            currentUserId={user!.id}
+            members={(members || []).map((m) => ({
+              id: m.id,
+              role: m.role,
+              userId: (m.user_profiles as any).id,
+              email: (m.user_profiles as any).email,
+              fullName: (m.user_profiles as any).full_name,
+            }))}
+          />
         )}
       </div>
 
@@ -144,9 +152,15 @@ export default async function TeamPage() {
                       {isAdmin && (
                         <TableCell className="text-right">
                           {member.role !== "owner" && profile.id !== user!.id && (
-                            <Button variant="ghost" size="sm">
-                              Remove
-                            </Button>
+                            <TeamActions
+                              organizationId={membership!.organization_id}
+                              isAdmin={isAdmin}
+                              currentUserId={user!.id}
+                              memberId={member.id}
+                              memberName={profile.full_name || profile.email}
+                              showRemoveOnly
+                              members={[]}
+                            />
                           )}
                         </TableCell>
                       )}

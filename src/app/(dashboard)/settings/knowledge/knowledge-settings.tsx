@@ -422,7 +422,7 @@ export function KnowledgeSettings({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link href="/settings">
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" aria-label="Go back">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
@@ -571,6 +571,7 @@ export function KnowledgeSettings({
                             variant="ghost"
                             size="icon"
                             className="h-6 w-6"
+                            aria-label="Remove question"
                             onClick={() =>
                               setFaqPairs(faqPairs.filter((_, i) => i !== index))
                             }
@@ -729,6 +730,7 @@ export function KnowledgeSettings({
                     <Button
                       variant="ghost"
                       size="sm"
+                      aria-label="Edit source"
                       onClick={() => openEdit(entry)}
                     >
                       <Pencil className="h-4 w-4" />
@@ -743,6 +745,7 @@ export function KnowledgeSettings({
                     <Button
                       variant="ghost"
                       size="sm"
+                      aria-label="Delete source"
                       onClick={() => handleDelete(entry)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
@@ -793,6 +796,7 @@ export function KnowledgeSettings({
                               variant="ghost"
                               size="icon"
                               className="h-6 w-6"
+                              aria-label="Remove question"
                               onClick={() =>
                                 setEditFaqPairs(
                                   editFaqPairs.filter((_, i) => i !== index)
