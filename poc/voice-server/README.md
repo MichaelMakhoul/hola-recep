@@ -29,7 +29,7 @@ Zero audio format conversion — Twilio's mulaw 8kHz passes directly to/from Dee
 
 ```bash
 cp .env.example .env
-# Fill in: DEEPGRAM_API_KEY, GROQ_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+# Fill in: DEEPGRAM_API_KEY, GROQ_API_KEY, TWILIO_AUTH_TOKEN
 ```
 
 ### 3. Start the Server
