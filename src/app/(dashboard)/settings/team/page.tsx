@@ -1,6 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -11,7 +10,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Plus, Users } from "lucide-react";
+import { Users } from "lucide-react";
+import { TeamActions } from "./team-actions";
 
 interface Membership {
   organization_id: string;
@@ -51,7 +51,8 @@ export default async function TeamPage() {
     `)
     .eq("organization_id", membership.organization_id) as { data: TeamMember[] | null } : { data: null };
 
-  const isAdmin = membership?.role === "owner" || membership?.role === "admin";
+  const isOwner = membership?.role === "owner";
+  const isAdmin = isOwner || membership?.role === "admin";
 
   return (
     <div className="space-y-6">
@@ -63,11 +64,17 @@ export default async function TeamPage() {
             Manage your team members and their access
           </p>
         </div>
-        {isAdmin && (
-          <Button>
-            <Plus className="mr-2 h-4 w-4" />
-            Invite Member
-          </Button>
+        {isAdmin && membership?.organization_id && (
+          <TeamActions
+            organizationId={membership.organization_id}
+            members={(members || []).map((m) => ({
+              id: m.id,
+              role: m.role,
+              userId: (m.user_profiles as any).id,
+              email: (m.user_profiles as any).email,
+              fullName: (m.user_profiles as any).full_name,
+            }))}
+          />
         )}
       </div>
 
@@ -87,7 +94,7 @@ export default async function TeamPage() {
                   <TableHead>Member</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Joined</TableHead>
-                  {isAdmin && <TableHead className="text-right">Actions</TableHead>}
+                  {isOwner && <TableHead className="text-right">Actions</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -141,12 +148,16 @@ export default async function TeamPage() {
                       <TableCell>
                         {new Date(member.created_at).toLocaleDateString()}
                       </TableCell>
-                      {isAdmin && (
+                      {isOwner && (
                         <TableCell className="text-right">
                           {member.role !== "owner" && profile.id !== user!.id && (
-                            <Button variant="ghost" size="sm">
-                              Remove
-                            </Button>
+                            <TeamActions
+                              organizationId={membership!.organization_id}
+                              memberId={member.id}
+                              memberName={profile.full_name || profile.email}
+                              showRemoveOnly
+                              members={[]}
+                            />
                           )}
                         </TableCell>
                       )}

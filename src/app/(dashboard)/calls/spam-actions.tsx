@@ -80,7 +80,7 @@ export function SpamActions({ callId, isSpam }: SpamActionsProps) {
 
   if (isLoading) {
     return (
-      <Button variant="ghost" size="icon" disabled>
+      <Button variant="ghost" size="icon" disabled aria-label="Loading">
         <Loader2 className="h-4 w-4 animate-spin" />
       </Button>
     );
@@ -89,7 +89,7 @@ export function SpamActions({ callId, isSpam }: SpamActionsProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon">
+        <Button variant="ghost" size="icon" aria-label="Spam actions">
           <MoreVertical className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
