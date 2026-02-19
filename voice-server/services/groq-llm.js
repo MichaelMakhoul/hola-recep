@@ -34,7 +34,7 @@ async function getChatResponse(apiKey, messages, options) {
   const data = await res.json();
 
   if (!data.choices || data.choices.length === 0) {
-    throw new Error(`Groq returned no choices (finish_reason: ${data.choices?.[0]?.finish_reason ?? "unknown"})`);
+    throw new Error("Groq returned no choices");
   }
 
   const content = data.choices[0].message?.content;

@@ -70,8 +70,17 @@ export async function POST(request: Request) {
     endedReason,
   } = payload;
 
-  if (!organizationId) {
-    return NextResponse.json({ error: "Missing organizationId" }, { status: 400 });
+  if (!organizationId || typeof organizationId !== "string") {
+    return NextResponse.json({ error: "Missing or invalid organizationId" }, { status: 400 });
+  }
+
+  if (typeof durationSeconds !== "number" || durationSeconds < 0) {
+    return NextResponse.json({ error: "Invalid durationSeconds" }, { status: 400 });
+  }
+
+  const validStatuses = ["completed", "failed", "missed", "in-progress"];
+  if (!status || !validStatuses.includes(status)) {
+    return NextResponse.json({ error: `Invalid status, must be one of: ${validStatuses.join(", ")}` }, { status: 400 });
   }
 
   const supabase = createAdminClient();
@@ -102,9 +111,10 @@ export async function POST(request: Request) {
     }
   }
 
-  // 2. Update call record with spam results (merge metadata, don't overwrite)
+  // 2. Update call record with spam results (merge metadata, don't overwrite).
+  // Safe as a read-then-write because completeCallRecord no longer touches metadata
+  // (voice_provider is set at insert time), making this the only post-insert metadata writer.
   if (callId && spamAnalysis) {
-    // Read existing metadata first to merge
     const { data: existingCall } = await (supabase as any)
       .from("calls")
       .select("metadata")
@@ -140,7 +150,7 @@ export async function POST(request: Request) {
 
   if (shouldTrackUsage) {
     try {
-      const { data: result, error: rpcError } = await (supabase as any).rpc("increment_call_usage", {
+      const { error: rpcError } = await (supabase as any).rpc("increment_call_usage", {
         org_id: organizationId,
       });
 

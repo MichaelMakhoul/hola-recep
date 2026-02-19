@@ -21,6 +21,7 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
       direction: "inbound",
       status: "in-progress",
       started_at: new Date().toISOString(),
+      metadata: { voice_provider: "self_hosted" },
     })
     .select("id")
     .single();
@@ -44,6 +45,8 @@ async function createCallRecord({ orgId, assistantId, phoneNumberId, callerPhone
 async function completeCallRecord(callId, { status, durationSeconds, transcript }) {
   const supabase = getSupabase();
 
+  // Don't touch metadata here — it was set at insert time and the internal
+  // endpoint may concurrently merge spam analysis results into it.
   const { error } = await supabase
     .from("calls")
     .update({
@@ -51,64 +54,11 @@ async function completeCallRecord(callId, { status, durationSeconds, transcript 
       ended_at: new Date().toISOString(),
       duration_seconds: durationSeconds,
       transcript: transcript || null,
-      metadata: {
-        voice_provider: "self_hosted",
-      },
     })
     .eq("id", callId);
 
   if (error) {
     throw new Error(`Failed to complete call record ${callId}: ${error.message}`);
-  }
-}
-
-/**
- * Increment call usage for billing.
- * Uses the same atomic RPC + error-code fallback pattern as billing-service.ts,
- * but simplified: no shouldUpgrade check or return value.
- */
-async function incrementUsage(orgId) {
-  const supabase = getSupabase();
-
-  const { data: result, error } = await supabase.rpc("increment_call_usage", {
-    org_id: orgId,
-  });
-
-  // Fallback if RPC doesn't exist (error 42883 = undefined_function, PGRST202 = PostgREST)
-  if (error && (error.code === "42883" || error.code === "PGRST202")) {
-    console.warn("[CallLogger] increment_call_usage RPC not found, using fallback");
-
-    const { data: subscription, error: selectError } = await supabase
-      .from("subscriptions")
-      .select("id, calls_used, calls_limit")
-      .eq("organization_id", orgId)
-      .single();
-
-    if (selectError || !subscription) {
-      console.error("[CallLogger] No subscription found for org:", { orgId, error: selectError });
-      return;
-    }
-
-    const newUsage = (subscription.calls_used || 0) + 1;
-    const { error: updateError } = await supabase
-      .from("subscriptions")
-      .update({ calls_used: newUsage })
-      .eq("id", subscription.id);
-
-    if (updateError) {
-      console.error("[CallLogger] Failed to update subscription usage (billing may be inaccurate):", {
-        orgId,
-        subscriptionId: subscription.id,
-        attemptedUsage: newUsage,
-        error: updateError,
-      });
-    }
-
-    return;
-  }
-
-  if (error) {
-    console.error("[CallLogger] Failed to increment usage:", { orgId, error });
   }
 }
 
@@ -140,6 +90,5 @@ async function notifyCallCompleted(internalApiUrl, secret, payload) {
 module.exports = {
   createCallRecord,
   completeCallRecord,
-  incrementUsage,
   notifyCallCompleted,
 };

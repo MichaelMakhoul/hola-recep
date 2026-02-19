@@ -2,6 +2,9 @@
  * Plain JS port of src/lib/prompt-builder/generate-prompt.ts
  * and legacy prompt handling from src/lib/knowledge-base/aggregate.ts.
  *
+ * Ported from TS source at commit c6c1f05. When the TS version changes,
+ * diff against that commit to identify what needs updating here.
+ *
  * Only includes functions needed at runtime (no Zod, no UI presets, no analysis plan).
  *
  * Key behavioral difference: the TS version references calendar tool-calling
