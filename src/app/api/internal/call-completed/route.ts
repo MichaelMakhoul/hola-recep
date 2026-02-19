@@ -115,28 +115,38 @@ export async function POST(request: Request) {
   // Safe as a read-then-write because completeCallRecord no longer touches metadata
   // (voice_provider is set at insert time), making this the only post-insert metadata writer.
   if (callId && spamAnalysis) {
-    const { data: existingCall } = await (supabase as any)
+    const { data: existingCall, error: fetchError } = await (supabase as any)
       .from("calls")
       .select("metadata")
       .eq("id", callId)
       .single();
 
-    const existingMetadata = existingCall?.metadata || {};
+    if (fetchError) {
+      console.error("[Internal] Failed to fetch existing call metadata — skipping metadata merge to avoid data loss:", {
+        callId, error: fetchError,
+      });
+    }
+
+    const existingMetadata = fetchError ? null : (existingCall?.metadata || {});
+    // If metadata fetch failed, still update spam columns but skip metadata merge
+    const updatePayload: Record<string, unknown> = {
+      is_spam: spamAnalysis.isSpam,
+      spam_score: spamAnalysis.spamScore,
+    };
+    if (existingMetadata !== null) {
+      updatePayload.metadata = {
+        ...existingMetadata,
+        ended_reason: endedReason,
+        spam_analysis: {
+          reasons: spamAnalysis.reasons,
+          confidence: spamAnalysis.confidence,
+          recommendation: spamAnalysis.recommendation,
+        },
+      };
+    }
     const { error: updateError } = await (supabase as any)
       .from("calls")
-      .update({
-        is_spam: spamAnalysis.isSpam,
-        spam_score: spamAnalysis.spamScore,
-        metadata: {
-          ...existingMetadata,
-          endedReason,
-          spamAnalysis: {
-            reasons: spamAnalysis.reasons,
-            confidence: spamAnalysis.confidence,
-            recommendation: spamAnalysis.recommendation,
-          },
-        },
-      })
+      .update(updatePayload)
       .eq("id", callId);
 
     if (updateError) {
@@ -171,6 +181,8 @@ export async function POST(request: Request) {
           if (updateError) {
             console.error("[Internal] Failed to update subscription usage:", { organizationId, error: updateError });
           }
+        } else {
+          console.error("[Internal] No subscription found for organization — billing skipped:", { organizationId });
         }
       } else if (rpcError) {
         console.error("[Internal] Failed to increment usage:", { organizationId, error: rpcError });
@@ -236,7 +248,7 @@ export async function POST(request: Request) {
   // Map "failed" status to "call.missed" webhook event since there is no
   // "call.failed" event type — from the customer's perspective, a failed
   // call is functionally equivalent to a missed one.
-  const webhookEvent = status === "failed"
+  const webhookEvent = (status === "failed" || status === "missed")
     ? "call.missed" as const
     : "call.completed" as const;
 
@@ -247,7 +259,9 @@ export async function POST(request: Request) {
     duration: durationSeconds,
     assistantName,
     outcome: status,
-  }).catch((err) => console.error("[Internal] Webhook delivery failed:", err));
+  }).catch((err) => console.error("[Internal] Webhook delivery failed:", {
+    organizationId, callId: callId || "unknown", webhookEvent, error: err,
+  }));
 
   return NextResponse.json({ received: true, notificationStatus });
 }

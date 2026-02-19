@@ -210,6 +210,13 @@ wss.on("connection", (twilioWs) => {
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
       }
+    } else if (durationSeconds > 0) {
+      console.error("[Cleanup] Call completed with no database record — call data is lost:", {
+        callSid: s.callSid,
+        organizationId: s.organizationId,
+        callerPhone: s.callerPhone,
+        durationSeconds,
+      });
     }
 
     // Notify the Next.js app for spam analysis, billing, notifications, webhooks
@@ -329,9 +336,14 @@ wss.on("connection", (twilioWs) => {
                 session.callFailed = true;
                 session.endedReason = "stt-error";
               }
-              sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.").catch((ttsErr) => {
-                console.error("[STT] Failed to send error message to caller:", ttsErr);
-              });
+              sendTTS(session, twilioWs, "I'm sorry, I'm experiencing technical difficulties. Please try calling again.")
+                .catch((ttsErr) => {
+                  console.error("[STT] Failed to send error message to caller:", ttsErr);
+                })
+                .finally(() => {
+                  // Disconnect after delivering the error message
+                  setTimeout(() => twilioWs.close(), 2000);
+                });
             },
             onClose: (code) => {
               if (code !== 1000 && code !== 1005 && session) {
@@ -344,10 +356,11 @@ wss.on("connection", (twilioWs) => {
           const greeting = getGreeting(context.assistant, context.organization.name);
           try {
             await sendTTS(session, twilioWs, greeting);
-            session.addMessage("assistant", greeting);
           } catch (err) {
-            console.error("[TTS] Failed to send greeting:", err);
+            console.error("[TTS] Failed to send greeting — caller will hear silence until they speak:", err);
           }
+          // Always add greeting to history so LLM context is consistent
+          session.addMessage("assistant", greeting);
           break;
         }
 
@@ -380,6 +393,15 @@ wss.on("connection", (twilioWs) => {
       }
     } catch (err) {
       console.error(`[Twilio] Error handling event="${msg.event}" callSid=${session?.callSid}:`, err);
+      // If the start event failed, the session is in an unusable state — close the connection
+      if (msg.event === "start") {
+        console.error("[Twilio] Fatal error during call setup — closing connection");
+        if (session) {
+          session.callFailed = true;
+          session.endedReason = "server-error";
+        }
+        twilioWs.close();
+      }
     }
   });
 
@@ -398,7 +420,7 @@ wss.on("connection", (twilioWs) => {
  * Handle final user transcript: get LLM response, synthesize, send back.
  */
 async function handleUserSpeech(session, twilioWs, transcript) {
-  if (session.isProcessing) return;
+  if (!session || session.isProcessing) return;
   session.isProcessing = true;
 
   // Barge-in: if assistant is speaking, clear Twilio's audio buffer

@@ -18,6 +18,7 @@ async function synthesizeSpeech(apiKey, text) {
 
   const res = await fetch(url, {
     method: "POST",
+    signal: AbortSignal.timeout(10_000),
     headers: {
       Authorization: `Token ${apiKey}`,
       "Content-Type": "application/json",
