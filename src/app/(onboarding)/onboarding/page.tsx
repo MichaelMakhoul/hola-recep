@@ -128,7 +128,7 @@ export default function OnboardingPage() {
   };
 
   const handleNext = async () => {
-    if (currentStep >= 4 || !canProceed()) return;
+    if (currentStep >= 4 || !canProceed() || isLoading) return;
 
     // When moving from step 2 → 3, create org + assistant so test call works
     if (currentStep === 2 && !data.createdAssistantId) {

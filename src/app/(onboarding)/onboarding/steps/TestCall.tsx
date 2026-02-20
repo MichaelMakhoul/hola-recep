@@ -25,7 +25,6 @@ import {
   ChevronDown,
   Play,
   Square,
-  MessageSquare,
 } from "lucide-react";
 import { useVoiceTest } from "@/lib/voice-test";
 import {
@@ -47,21 +46,12 @@ interface TestCallProps {
   onTestComplete: () => void;
 }
 
-// Test scenario prompts
-const TEST_SCENARIOS = [
-  { id: "appointment", label: "Schedule Appointment", prompt: "I'd like to schedule an appointment" },
-  { id: "hours", label: "Ask Hours", prompt: "What are your hours of operation?" },
-  { id: "pricing", label: "Pricing", prompt: "I have a question about pricing" },
-  { id: "emergency", label: "Emergency", prompt: "This is an emergency" },
-];
-
 export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
   const [duration, setDuration] = useState(0);
 
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [maxDuration, setMaxDuration] = useState(3); // minutes
-  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
 
   // Voice preview state
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
@@ -143,7 +133,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
 
   const handleTryAgain = () => {
     setDuration(0);
-    setSelectedScenario(null);
     reset();
   };
 
@@ -163,9 +152,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
 
   // Map status for display
   const displayStatus = status === "error" ? "idle" : status;
-
-  // Check if test calls are available (VOICE_SERVER_PUBLIC_URL configured)
-  const isTestAvailable = true; // Token endpoint will return 503 if not configured
 
   return (
     <div className="space-y-6">
@@ -251,37 +237,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
             </Card>
           </CollapsibleContent>
         </Collapsible>
-      )}
-
-      {/* Test Scenarios */}
-      {displayStatus === "idle" && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <MessageSquare className="h-4 w-4" />
-            <span>Try a scenario:</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {TEST_SCENARIOS.map((scenario) => (
-              <Button
-                key={scenario.id}
-                variant={selectedScenario === scenario.id ? "default" : "outline"}
-                size="sm"
-                onClick={() =>
-                  setSelectedScenario(
-                    selectedScenario === scenario.id ? null : scenario.id
-                  )
-                }
-              >
-                {scenario.label}
-              </Button>
-            ))}
-          </div>
-          {selectedScenario && (
-            <p className="text-sm text-muted-foreground italic">
-              &quot;{TEST_SCENARIOS.find(s => s.id === selectedScenario)?.prompt}&quot;
-            </p>
-          )}
-        </div>
       )}
 
       {/* Call Status Card */}
