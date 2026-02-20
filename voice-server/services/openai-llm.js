@@ -119,15 +119,29 @@ async function streamChatResponse(apiKey, messages, options) {
     body.max_tokens = 300;
   }
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    signal: AbortSignal.timeout(15_000),
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  // Retry loop for rate limits (matching getChatResponse behavior)
+  let res;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 429 && attempt < 2) {
+      const retryAfter = res.headers.get("retry-after");
+      const waitMs = retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1);
+      console.warn(`[OpenAI] Stream rate limited (429), retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+
+    break;
+  }
 
   if (!res.ok) {
     const text = (await res.text()).slice(0, 500);
@@ -163,7 +177,8 @@ async function streamChatResponse(apiKey, messages, options) {
       let parsed;
       try {
         parsed = JSON.parse(data);
-      } catch {
+      } catch (parseErr) {
+        console.warn("[OpenAI] Failed to parse SSE chunk:", data.slice(0, 100));
         continue;
       }
 

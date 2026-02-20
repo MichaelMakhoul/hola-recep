@@ -222,14 +222,13 @@ export default function OnboardingPage() {
 
         // Save scraped KB content (if user imported from website)
         if (data.scrapedKBContent) {
+          const kbTitle = (() => {
+            try { return new URL(data.scrapedSourceUrl).hostname.replace(/^www\./, ""); }
+            catch { return "Website Import"; }
+          })();
+
           try {
-            let kbTitle: string;
-            try {
-              kbTitle = new URL(data.scrapedSourceUrl).hostname.replace(/^www\./, "");
-            } catch {
-              kbTitle = "Website Import";
-            }
-            await fetch("/api/v1/knowledge-base", {
+            const kbRes = await fetch("/api/v1/knowledge-base", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -239,9 +238,13 @@ export default function OnboardingPage() {
                 sourceUrl: data.scrapedSourceUrl,
               }),
             });
+            if (!kbRes.ok) {
+              console.error("KB save failed:", kbRes.status);
+              toast({ title: "Website import saved partially", description: "Your assistant was created but the knowledge base import failed. You can re-import later from settings.", variant: "destructive" });
+            }
           } catch (err) {
             console.error("Failed to save scraped KB:", err);
-            // Non-fatal — assistant still gets created
+            toast({ title: "Website import saved partially", description: "Your assistant was created but the knowledge base import failed. You can re-import later from settings.", variant: "destructive" });
           }
         }
 

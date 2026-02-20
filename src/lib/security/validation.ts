@@ -115,7 +115,7 @@ function isPrivateIp(ip: string): boolean {
   // IPv6
   const lower = ip.toLowerCase();
   if (lower === "::1") return true;
-  if (lower.startsWith("fc00:") || lower.startsWith("fd")) return true;
+  if (lower.startsWith("fc00:") || /^fd[0-9a-f]{2}:/.test(lower)) return true;
   if (lower.startsWith("fe80:")) return true;
   // IPv4-mapped IPv6 (::ffff:127.0.0.1)
   const mappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);

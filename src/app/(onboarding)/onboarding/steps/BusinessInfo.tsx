@@ -112,41 +112,20 @@ export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResul
               <span>Website imported — please confirm the details below</span>
             </div>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 pl-6 text-xs">
-              {scrapeResult.businessInfo.name && (
-                <>
-                  <dt className="font-medium text-green-700 dark:text-green-400">Name</dt>
-                  <dd>{scrapeResult.businessInfo.name}</dd>
-                </>
-              )}
-              {scrapeResult.businessInfo.phone && (
-                <>
-                  <dt className="font-medium text-green-700 dark:text-green-400">Phone</dt>
-                  <dd>{scrapeResult.businessInfo.phone}</dd>
-                </>
-              )}
-              {scrapeResult.businessInfo.email && (
-                <>
-                  <dt className="font-medium text-green-700 dark:text-green-400">Email</dt>
-                  <dd>{scrapeResult.businessInfo.email}</dd>
-                </>
-              )}
-              {scrapeResult.businessInfo.address && (
-                <>
-                  <dt className="font-medium text-green-700 dark:text-green-400">Address</dt>
-                  <dd>{scrapeResult.businessInfo.address}</dd>
-                </>
-              )}
-              {scrapeResult.businessInfo.hours && scrapeResult.businessInfo.hours.length > 0 && (
-                <>
-                  <dt className="font-medium text-green-700 dark:text-green-400">Hours</dt>
-                  <dd>{scrapeResult.businessInfo.hours.join(", ")}</dd>
-                </>
-              )}
-              {scrapeResult.businessInfo.services && scrapeResult.businessInfo.services.length > 0 && (
-                <>
-                  <dt className="font-medium text-green-700 dark:text-green-400">Services</dt>
-                  <dd>{scrapeResult.businessInfo.services.join(", ")}</dd>
-                </>
+              {([
+                ["Name", scrapeResult.businessInfo.name],
+                ["Phone", scrapeResult.businessInfo.phone],
+                ["Email", scrapeResult.businessInfo.email],
+                ["Address", scrapeResult.businessInfo.address],
+                ["Hours", scrapeResult.businessInfo.hours?.join(", ")],
+                ["Services", scrapeResult.businessInfo.services?.join(", ")],
+              ] as const).map(([label, value]) =>
+                value ? (
+                  <span key={label} className="contents">
+                    <dt className="font-medium text-green-700 dark:text-green-400">{label}</dt>
+                    <dd>{value}</dd>
+                  </span>
+                ) : null
               )}
             </dl>
             <p className="pl-6 text-xs text-green-600 dark:text-green-400">

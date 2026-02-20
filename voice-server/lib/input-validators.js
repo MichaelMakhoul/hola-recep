@@ -37,11 +37,10 @@ const MULTIPLIERS = { double: 2, triple: 3 };
  * Handles: "0412 345 678", "oh four one two", "double five", etc.
  */
 function extractSpokenDigits(text) {
-  const lower = text.toLowerCase();
   let digits = "";
 
   // First pass: expand "double/triple X" patterns
-  let expanded = lower;
+  let expanded = text.toLowerCase();
   for (const [mult, count] of Object.entries(MULTIPLIERS)) {
     const re = new RegExp(`${mult}\\s+(\\w+)`, "gi");
     expanded = expanded.replace(re, (_, word) => {

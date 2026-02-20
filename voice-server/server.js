@@ -514,6 +514,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
           }
           // Chain TTS calls so they play in order
           ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, sentence)).catch((err) => {
+            session.isSpeaking = false;
             console.error("[StreamTTS] Error sending sentence:", err.message);
           });
         },
@@ -560,6 +561,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 
           // Handle transfer action — send announcement and close
           if (toolResult.action === "transfer" && toolResult.transferTo) {
+            hold.stop();
             await sendTTS(session, twilioWs, resultMessage);
             session.addMessage("assistant", resultMessage);
             session.endedReason = "transferred";
@@ -689,21 +691,27 @@ function startHoldAudio(session, ws, mode) {
   function sendLoop() {
     if (stopped || ws.readyState !== WebSocket.OPEN) return;
 
-    if (mode === "twilio") {
-      const chunks = chunkAudioForTwilio(holdBuf);
-      for (const chunk of chunks) {
-        if (stopped || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({
-          event: "media",
-          streamSid: session.streamSid,
-          media: { payload: chunk },
-        }));
+    try {
+      if (mode === "twilio") {
+        const chunks = chunkAudioForTwilio(holdBuf);
+        for (const chunk of chunks) {
+          if (stopped || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({
+            event: "media",
+            streamSid: session.streamSid,
+            media: { payload: chunk },
+          }));
+        }
+      } else {
+        // Browser test call — send raw binary
+        if (!stopped && ws.readyState === WebSocket.OPEN) {
+          ws.send(holdBuf);
+        }
       }
-    } else {
-      // Browser test call — send raw binary
-      if (!stopped && ws.readyState === WebSocket.OPEN) {
-        ws.send(holdBuf);
-      }
+    } catch (err) {
+      console.error("[HoldAudio] Error sending hold audio:", err.message);
+      stopped = true;
+      return;
     }
 
     // Loop every 2 seconds
@@ -1008,6 +1016,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
               ws.send(audioBuffer);
             }
           }).catch((err) => {
+            session.isSpeaking = false;
             console.error("[TestStreamTTS] Error sending sentence:", err.message);
           });
         },

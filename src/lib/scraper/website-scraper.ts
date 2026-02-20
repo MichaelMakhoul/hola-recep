@@ -5,7 +5,7 @@
  * the AI assistant with business-specific knowledge.
  */
 
-import { isUrlAllowed, isUrlAllowedAsync } from "@/lib/security/validation";
+import { isUrlAllowedAsync } from "@/lib/security/validation";
 
 export interface ScrapedPage {
   url: string;
@@ -245,7 +245,7 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
         if (!location) return null;
 
         const redirectUrl = new URL(location, currentUrl).href;
-        if (!isUrlAllowed(redirectUrl)) {
+        if (!(await isUrlAllowedAsync(redirectUrl))) {
           console.warn(`Blocked redirect to disallowed URL: ${redirectUrl}`);
           return null;
         }
