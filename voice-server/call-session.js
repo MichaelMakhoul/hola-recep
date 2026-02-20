@@ -1,4 +1,5 @@
 const { WebSocket } = require("ws");
+const { validateInput, getBufferConfig } = require("./lib/input-validators");
 
 const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 
@@ -22,8 +23,19 @@ class CallSession {
     this.calendarEnabled = false;
     this.transferRules = [];
     this.deepgramVoice = null;
+    this.holdPreset = "neutral";
     this.callFailed = false;
     this.endedReason = null;
+
+    // Utterance buffering — accumulate STT finals before sending to LLM
+    this._utteranceBuffer = [];
+    this._utteranceTimer = null;
+    this._maxWaitTimer = null;
+    this._bufferStartedAt = null;
+    this._pendingTranscript = null; // queued transcript while LLM is processing
+
+    // Adaptive input detection — controls buffer timing per input type
+    this._expectedInputType = "general";
   }
 
   /**
@@ -63,7 +75,128 @@ class CallSession {
     return Math.round((Date.now() - this.startedAt) / 1000);
   }
 
+  /**
+   * Set the expected input type for the next user utterance.
+   * Controls buffer timing and validation behavior.
+   * @param {"phone"|"email"|"name"|"address"|"date_time"|"general"} type
+   */
+  setExpectedInputType(type) {
+    this._expectedInputType = type || "general";
+  }
+
+  /**
+   * Buffer a final STT transcript and debounce before dispatching.
+   * Uses type-aware timing: structured inputs (phone, email, address)
+   * get longer debounce and max-wait to avoid cutting off mid-dictation.
+   */
+  bufferTranscript(text, callback) {
+    const config = getBufferConfig(this._expectedInputType);
+
+    this._utteranceBuffer.push(text);
+    if (!this._utteranceCallback) this._utteranceCallback = callback;
+
+    // Start max-wait timer on first buffer entry
+    if (!this._bufferStartedAt) {
+      this._bufferStartedAt = Date.now();
+      this._maxWaitTimer = setTimeout(() => {
+        console.log(`[Buffer] Max wait (${config.maxWaitMs}ms) reached for type="${this._expectedInputType}" — force flushing`);
+        this._flushAndReset();
+      }, config.maxWaitMs);
+    }
+
+    // Reset debounce timer
+    if (this._utteranceTimer) clearTimeout(this._utteranceTimer);
+    this._utteranceTimer = setTimeout(() => {
+      const combined = this._utteranceBuffer.join(" ").trim();
+      if (!combined) return;
+
+      // For structured inputs, check completeness before flushing
+      if (this._expectedInputType !== "general") {
+        const { complete, reason } = validateInput(this._expectedInputType, combined);
+        if (complete) {
+          console.log(`[Buffer] Input validated (${this._expectedInputType}): ${reason}`);
+          this._flushAndReset();
+        } else {
+          console.log(`[Buffer] Input incomplete (${this._expectedInputType}): ${reason} — waiting...`);
+          // Don't flush yet — debounce will restart on next STT final,
+          // or maxWait will force flush
+        }
+      } else {
+        this._flushAndReset();
+      }
+    }, config.debounceMs);
+  }
+
+  /**
+   * Flush the utterance buffer when triggered by UtteranceEnd.
+   * Respects ignoreUtteranceEnd for structured input types.
+   */
+  flushBuffer() {
+    const config = getBufferConfig(this._expectedInputType);
+    if (config.ignoreUtteranceEnd && this._utteranceBuffer.length > 0) {
+      console.log(`[Buffer] Ignoring UtteranceEnd for type="${this._expectedInputType}"`);
+      return;
+    }
+    this._flushAndReset();
+  }
+
+  /**
+   * Internal: flush buffer, clear all timers, reset input type.
+   */
+  _flushAndReset() {
+    if (this._utteranceTimer) {
+      clearTimeout(this._utteranceTimer);
+      this._utteranceTimer = null;
+    }
+    if (this._maxWaitTimer) {
+      clearTimeout(this._maxWaitTimer);
+      this._maxWaitTimer = null;
+    }
+    this._bufferStartedAt = null;
+
+    const combined = this._utteranceBuffer.join(" ").trim();
+    this._utteranceBuffer = [];
+    const cb = this._utteranceCallback;
+    this._utteranceCallback = null;
+
+    // Reset to general after flushing
+    this._expectedInputType = "general";
+
+    if (combined && cb) cb(combined);
+  }
+
+  /**
+   * Queue transcript if LLM is busy, otherwise process immediately.
+   * After LLM finishes, check for a queued transcript and process it.
+   */
+  queueOrProcess(transcript, processFn) {
+    if (this.isProcessing) {
+      // Append to pending instead of dropping
+      this._pendingTranscript = this._pendingTranscript
+        ? this._pendingTranscript + " " + transcript
+        : transcript;
+      return;
+    }
+    processFn(transcript);
+  }
+
+  /**
+   * Call after LLM processing finishes. If there's a queued transcript,
+   * dispatch it for processing.
+   */
+  drainPending(processFn) {
+    if (this._pendingTranscript) {
+      const pending = this._pendingTranscript;
+      this._pendingTranscript = null;
+      // Use setImmediate to break the call chain:
+      // handleUserSpeech → finally → drainPending → handleUserSpeech
+      setImmediate(() => processFn(pending));
+    }
+  }
+
   destroy() {
+    if (this._utteranceTimer) clearTimeout(this._utteranceTimer);
+    if (this._maxWaitTimer) clearTimeout(this._maxWaitTimer);
     if (this.deepgramWs && this.deepgramWs.readyState === WebSocket.OPEN) {
       this.deepgramWs.close();
     }

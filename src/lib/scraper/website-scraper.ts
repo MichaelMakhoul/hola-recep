@@ -5,7 +5,7 @@
  * the AI assistant with business-specific knowledge.
  */
 
-import { isUrlAllowed } from "@/lib/security/validation";
+import { isUrlAllowedAsync } from "@/lib/security/validation";
 
 export interface ScrapedPage {
   url: string;
@@ -219,6 +219,12 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
 
   for (let i = 0; i <= maxRedirects; i++) {
     try {
+      // DNS-resolving SSRF check before every fetch
+      if (!(await isUrlAllowedAsync(currentUrl))) {
+        console.warn(`Blocked fetch to disallowed URL (DNS check): ${currentUrl}`);
+        return null;
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -239,7 +245,7 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
         if (!location) return null;
 
         const redirectUrl = new URL(location, currentUrl).href;
-        if (!isUrlAllowed(redirectUrl)) {
+        if (!(await isUrlAllowedAsync(redirectUrl))) {
           console.warn(`Blocked redirect to disallowed URL: ${redirectUrl}`);
           return null;
         }
@@ -309,7 +315,8 @@ export async function scrapeWebsite(
     visited.add(currentUrl);
 
     // SSRF protection: validate every URL before fetching (not just the initial one)
-    if (!isUrlAllowed(currentUrl)) {
+    // Uses async DNS-resolving check to prevent DNS rebinding attacks
+    if (!(await isUrlAllowedAsync(currentUrl))) {
       continue;
     }
 

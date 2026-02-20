@@ -2,6 +2,7 @@
  * Security validation utilities
  */
 import crypto from "crypto";
+import dns from "dns/promises";
 
 // UUID validation regex
 export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -86,6 +87,70 @@ export function isUrlAllowed(urlString: string): boolean {
       if (a === 169 && b === 254) return false;
       // 0.x.x.x
       if (a === 0) return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if an IP address belongs to a private/reserved range.
+ */
+function isPrivateIp(ip: string): boolean {
+  // IPv4
+  const v4Match = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4Match) {
+    const [, a, b] = v4Match.map(Number);
+    if (a === 10) return true;                              // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true;       // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;                 // 192.168.0.0/16
+    if (a === 127) return true;                              // 127.0.0.0/8
+    if (a === 169 && b === 254) return true;                 // 169.254.0.0/16
+    if (a === 0) return true;                                // 0.0.0.0/8
+    return false;
+  }
+
+  // IPv6
+  const lower = ip.toLowerCase();
+  if (lower === "::1") return true;
+  if (lower.startsWith("fc00:") || /^fd[0-9a-f]{2}:/.test(lower)) return true;
+  if (lower.startsWith("fe80:")) return true;
+  // IPv4-mapped IPv6 (::ffff:127.0.0.1)
+  const mappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedMatch) return isPrivateIp(mappedMatch[1]);
+
+  return false;
+}
+
+/**
+ * Async SSRF-safe URL check: runs the synchronous hostname checks AND
+ * resolves DNS to verify the IP is not in a private range.
+ * Use this before making any outbound HTTP request with a user-supplied URL.
+ */
+export async function isUrlAllowedAsync(urlString: string): Promise<boolean> {
+  // Fast synchronous check first (blocks obvious patterns)
+  if (!isUrlAllowed(urlString)) return false;
+
+  try {
+    const { hostname } = new URL(urlString);
+
+    // If hostname is already a literal IP, isUrlAllowed already checked it
+    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) return true;
+
+    // Resolve DNS and check all returned addresses
+    const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
+    const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
+    const allAddresses = [...addresses, ...addresses6];
+
+    if (allAddresses.length === 0) {
+      // DNS resolution failed — block to be safe
+      return false;
+    }
+
+    for (const ip of allAddresses) {
+      if (isPrivateIp(ip)) return false;
     }
 
     return true;

@@ -21,6 +21,9 @@ interface OnboardingData {
   industry: string;
   businessPhone: string;
   businessWebsite: string;
+  // Scraped website content (cached until org creation)
+  scrapedKBContent: string;
+  scrapedSourceUrl: string;
   // Step 2: Assistant Setup
   assistantName: string;
   systemPrompt: string;
@@ -43,6 +46,8 @@ const initialData: OnboardingData = {
   industry: "",
   businessPhone: "",
   businessWebsite: "",
+  scrapedKBContent: "",
+  scrapedSourceUrl: "",
   assistantName: "",
   systemPrompt: "",
   firstMessage: "",
@@ -67,6 +72,11 @@ export default function OnboardingPage() {
   const [data, setData] = useState<OnboardingData>(initialData);
   const [isLoading, setIsLoading] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [isScraping, setIsScraping] = useState(false);
+  const [scrapeResult, setScrapeResult] = useState<{
+    businessInfo: Record<string, any>;
+    totalPages: number;
+  } | null>(null);
   const router = useRouter();
   const { toast } = useToast();
   const supabase = createClient();
@@ -95,6 +105,53 @@ export default function OnboardingPage() {
 
   const updateData = (updates: Partial<OnboardingData>) => {
     setData((prev) => ({ ...prev, ...updates }));
+  };
+
+  const handleScrape = async (url: string) => {
+    setIsScraping(true);
+    setScrapeResult(null);
+    try {
+      const res = await fetch("/api/v1/scrape-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to scan website");
+      }
+
+      const result = await res.json();
+
+      // Cache KB content for saving after org creation
+      const updates: Partial<OnboardingData> = {
+        scrapedKBContent: result.content,
+        scrapedSourceUrl: url,
+      };
+
+      // Auto-fill fields from scraped data (user clicked Import, so overwrite)
+      if (result.businessInfo?.name) {
+        updates.businessName = result.businessInfo.name;
+      }
+      if (result.businessInfo?.phone) {
+        updates.businessPhone = result.businessInfo.phone;
+      }
+
+      updateData(updates);
+      setScrapeResult({
+        businessInfo: result.businessInfo || {},
+        totalPages: result.totalPages || 0,
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Import failed",
+        description: error.message || "Could not scan the website. Please try again.",
+      });
+    } finally {
+      setIsScraping(false);
+    }
   };
 
   const generateSlug = (name: string) => {
@@ -162,6 +219,34 @@ export default function OnboardingPage() {
             timezone: countryConfig?.defaultTimezone || "America/New_York",
           })
           .eq("id", orgId);
+
+        // Save scraped KB content (if user imported from website)
+        if (data.scrapedKBContent) {
+          const kbTitle = (() => {
+            try { return new URL(data.scrapedSourceUrl).hostname.replace(/^www\./, ""); }
+            catch { return "Website Import"; }
+          })();
+
+          try {
+            const kbRes = await fetch("/api/v1/knowledge-base", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                title: kbTitle,
+                sourceType: "website",
+                content: data.scrapedKBContent,
+                sourceUrl: data.scrapedSourceUrl,
+              }),
+            });
+            if (!kbRes.ok) {
+              console.error("KB save failed:", kbRes.status);
+              toast({ title: "Website import saved partially", description: "Your assistant was created but the knowledge base import failed. You can re-import later from settings.", variant: "destructive" });
+            }
+          } catch (err) {
+            console.error("Failed to save scraped KB:", err);
+            toast({ title: "Website import saved partially", description: "Your assistant was created but the knowledge base import failed. You can re-import later from settings.", variant: "destructive" });
+          }
+        }
 
         // Create assistant
         const assistantResponse = await fetch("/api/v1/assistants", {
@@ -367,6 +452,9 @@ export default function OnboardingPage() {
                     businessWebsite: data.businessWebsite,
                   }}
                   onChange={(updates) => updateData(updates)}
+                  onScrape={handleScrape}
+                  isScraping={isScraping}
+                  scrapeResult={scrapeResult}
                 />
               )}
 
