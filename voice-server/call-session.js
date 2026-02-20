@@ -93,7 +93,7 @@ class CallSession {
     const config = getBufferConfig(this._expectedInputType);
 
     this._utteranceBuffer.push(text);
-    this._utteranceCallback = callback;
+    if (!this._utteranceCallback) this._utteranceCallback = callback;
 
     // Start max-wait timer on first buffer entry
     if (!this._bufferStartedAt) {
@@ -188,7 +188,9 @@ class CallSession {
     if (this._pendingTranscript) {
       const pending = this._pendingTranscript;
       this._pendingTranscript = null;
-      processFn(pending);
+      // Use setImmediate to break the call chain:
+      // handleUserSpeech → finally → drainPending → handleUserSpeech
+      setImmediate(() => processFn(pending));
     }
   }
 

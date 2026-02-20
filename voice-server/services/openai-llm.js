@@ -81,8 +81,9 @@ async function getChatResponse(apiKey, messages, options) {
   throw new Error("OpenAI API rate limited after all retries");
 }
 
-// Sentence boundary regex — splits on . ! ? followed by a space or end of string.
-// Avoids splitting on abbreviations like "Dr." or numbers like "9:00 A.M."
+// Sentence boundary regex — splits on . ! ? followed by whitespace.
+// Note: will split on abbreviations like "Dr. Smith" — acceptable for TTS
+// chunking since slightly early splits sound natural in speech.
 const SENTENCE_BREAK = /(?<=[.!?])\s+/;
 
 /**

@@ -5,7 +5,8 @@
   "description": "Self-hosted voice AI server — Twilio + Deepgram + OpenAI + Supabase",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test 'tests/*.test.js'"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
