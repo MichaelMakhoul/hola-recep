@@ -1,6 +1,6 @@
 const { WebSocket } = require("ws");
 
-const MAX_MESSAGES = 21; // system prompt + up to 20 conversation messages (typically 10 turn pairs)
+const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 
 class CallSession {
   constructor(callSid) {

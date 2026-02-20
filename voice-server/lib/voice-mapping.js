@@ -11,8 +11,8 @@ const DEFAULT_DEEPGRAM_VOICE = "aura-asteria-en";
  * ElevenLabs voice ID → Deepgram Aura voice name.
  *
  * Deepgram Aura voices used:
- * Female: asteria (warm), luna (professional), stella (upbeat), athena (authoritative), hera (soothing)
- * Male: orion (friendly), arcas (calm/pro), orpheus (warm), angus (authoritative), perseus (casual), helios (conversational)
+ * Female: asteria (warm), luna (professional), stella (upbeat), hera (soothing)
+ * Male: orion (friendly), arcas (calm/pro), orpheus (warm), angus (authoritative), perseus (casual)
  * British: all map to their closest gender match with accent note
  * Australian: map to closest general voice
  */

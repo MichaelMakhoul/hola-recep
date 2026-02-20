@@ -225,8 +225,8 @@ export async function PATCH(
         }
 
         vapiUpdate.model = {
-          provider: validatedData.modelProvider || currentAssistant.model_provider,
-          model: validatedData.model || currentAssistant.model,
+          provider: "openai",
+          model: "gpt-4o-mini",
           messages: [{ role: "system", content: vapiSystemPrompt }],
           toolIds,
         };

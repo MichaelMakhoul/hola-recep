@@ -25,10 +25,9 @@ Return ONLY valid JSON, no other text.`;
  * Analyze a completed call transcript and extract structured data.
  *
  * @param {string} transcript - The full call transcript
- * @param {{ organizationName?: string, assistantName?: string }} [metadata]
  * @returns {Promise<object|null>} Extracted data or null if analysis fails
  */
-async function analyzeCallTranscript(transcript, metadata) {
+async function analyzeCallTranscript(transcript) {
   if (!transcript || transcript.trim().length < 20) {
     return null; // Too short to analyze meaningfully
   }
@@ -78,7 +77,13 @@ async function analyzeCallTranscript(transcript, metadata) {
       return null;
     }
 
-    const analysis = JSON.parse(content);
+    let analysis;
+    try {
+      analysis = JSON.parse(content);
+    } catch (parseErr) {
+      console.error("[PostCallAnalysis] Failed to parse OpenAI response as JSON:", content.slice(0, 200));
+      return null;
+    }
 
     return {
       callerName: analysis.caller_name || null,

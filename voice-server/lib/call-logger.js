@@ -66,25 +66,30 @@ async function completeCallRecord(callId, {
   if (callerName) updatePayload.caller_name = callerName;
   if (collectedData) updatePayload.collected_data = collectedData;
 
-  // Store success evaluation in metadata (merged, not overwritten)
-  if (successEvaluation) {
-    // Read existing metadata first to merge safely
-    const { data: existing } = await supabase
-      .from("calls")
-      .select("metadata")
-      .eq("id", callId)
-      .single();
-
-    updatePayload.metadata = {
-      ...(existing?.metadata || {}),
-      successEvaluation,
-    };
-  }
-
   const { error } = await supabase
     .from("calls")
     .update(updatePayload)
     .eq("id", callId);
+
+  // Atomically merge successEvaluation into metadata to avoid race with call-completed webhook
+  if (successEvaluation && !error) {
+    const { error: metaErr } = await supabase.rpc("exec_sql", {
+      query: `UPDATE calls SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+      params: [JSON.stringify({ successEvaluation }), callId],
+    }).maybeSingle();
+    // Fallback: if RPC not available, use regular update (non-atomic but best effort)
+    if (metaErr) {
+      const { data: existing } = await supabase
+        .from("calls")
+        .select("metadata")
+        .eq("id", callId)
+        .single();
+      await supabase
+        .from("calls")
+        .update({ metadata: { ...(existing?.metadata || {}), successEvaluation } })
+        .eq("id", callId);
+    }
+  }
 
   if (error) {
     throw new Error(`Failed to complete call record ${callId}: ${error.message}`);

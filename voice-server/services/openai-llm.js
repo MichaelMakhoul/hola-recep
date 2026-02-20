@@ -8,7 +8,7 @@ const MAX_RETRIES = 2;
  * @param {string} apiKey
  * @param {Array<{ role: string, content: string } | { role: string, tool_call_id: string, content: string }>} messages
  * @param {{ model?: string, tools?: object[], tool_choice?: string }} [options]
- * @returns {Promise<{ type: "content", content: string } | { type: "tool_calls", toolCalls: object[] }>}
+ * @returns {Promise<{ type: "content", content: string } | { type: "tool_calls", toolCalls: object[], message: object }>}
  */
 async function getChatResponse(apiKey, messages, options) {
   if (!messages || messages.length === 0) {

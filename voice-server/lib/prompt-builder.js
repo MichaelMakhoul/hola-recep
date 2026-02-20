@@ -2,15 +2,11 @@
  * Plain JS port of src/lib/prompt-builder/generate-prompt.ts
  * and legacy prompt handling from src/lib/knowledge-base/aggregate.ts.
  *
- * Ported from TS source at commit c6c1f05. When the TS version changes,
- * diff against that commit to identify what needs updating here.
- *
  * Only includes functions needed at runtime (no Zod, no UI presets, no analysis plan).
  *
- * Key behavioral difference: the TS version references calendar tool-calling
- * (get_current_datetime, check_availability, book_appointment) in scheduling
- * instructions; this JS version replaces those with message-taking guidance
- * since the self-hosted voice server has no calendar tool integration yet.
+ * Scheduling instructions are controlled by a `calendarEnabled` parameter.
+ * When true, real tool-calling instructions are included; when false,
+ * message-taking guidance is used instead.
  */
 
 const toneDescriptions = {
@@ -294,11 +290,6 @@ function buildBehaviorsSection(behaviors, options) {
 
 /**
  * Build a full system prompt from a guided PromptConfig + context.
- * Direct port of the TS version.
- */
-/**
- * Build a full system prompt from a guided PromptConfig + context.
- * Direct port of the TS version.
  *
  * @param {object} config
  * @param {{ businessName?: string, industry?: string, knowledgeBase?: string, timezone?: string, businessHours?: object, defaultAppointmentDuration?: number, calendarEnabled?: boolean }} context
@@ -364,7 +355,7 @@ function generateGreeting(tone, businessName) {
 
 /**
  * Build system prompt for an assistant — handles both guided (prompt_config) and legacy prompts.
- * Mirrors the logic in src/lib/knowledge-base/aggregate.ts lines 132-160.
+ * Mirrors the KB aggregation and placeholder replacement logic in src/lib/knowledge-base/aggregate.ts.
  *
  * @param {object} assistant
  * @param {object} organization

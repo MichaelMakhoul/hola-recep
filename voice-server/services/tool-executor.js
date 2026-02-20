@@ -11,6 +11,13 @@ const { transferCall } = require("./twilio-transfer");
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 
+const CALENDAR_FUNCTIONS = [
+  "get_current_datetime",
+  "check_availability",
+  "book_appointment",
+  "cancel_appointment",
+];
+
 /**
  * OpenAI-compatible tool definitions for calendar functions.
  * Passed to the LLM when the org has calendar capabilities.
@@ -157,15 +164,7 @@ async function executeToolCall(functionName, args, context) {
     return executeTransferCall(args, context);
   }
 
-  // ── Calendar functions (delegated to Next.js internal API) ──
-  const calendarFunctions = [
-    "get_current_datetime",
-    "check_availability",
-    "book_appointment",
-    "cancel_appointment",
-  ];
-
-  if (calendarFunctions.includes(functionName)) {
+  if (CALENDAR_FUNCTIONS.includes(functionName)) {
     // In test mode, simulate write operations instead of hitting the real API
     if (context.testMode && (functionName === "book_appointment" || functionName === "cancel_appointment")) {
       return simulateCalendarWrite(functionName, args);
@@ -182,6 +181,7 @@ async function executeToolCall(functionName, args, context) {
  */
 async function executeCalendarCall(functionName, args, context) {
   if (!INTERNAL_API_URL || !INTERNAL_API_SECRET) {
+    console.error(`[ToolExecutor] Cannot execute ${functionName} — INTERNAL_API_URL or INTERNAL_API_SECRET not configured`);
     return {
       message:
         "I'm sorry, I'm unable to access the calendar system right now. Would you like me to take your information instead?",
@@ -268,6 +268,14 @@ async function executeTransferCall(args, context) {
     (urgency === "high"
       ? `I understand this is urgent. Let me connect you with ${targetName} right away. Please hold.`
       : `Let me connect you with ${targetName} who can better assist you. Please hold for just a moment.`);
+
+  if (!matchedRule.transferToPhone) {
+    console.error(`[ToolExecutor] Transfer rule "${matchedRule.transferToName || "unnamed"}" has no transferToPhone configured`);
+    return {
+      message: "I'm sorry, I'm unable to transfer your call right now. Let me take your information and have someone call you back.",
+      action: "callback",
+    };
+  }
 
   if (!context.callSid) {
     return {

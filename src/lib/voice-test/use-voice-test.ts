@@ -22,6 +22,13 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
   const [error, setError] = useState<string | null>(null);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
 
+  // Ref tracks latest status for use in WebSocket callbacks (avoids stale closures)
+  const statusRef = useRef<VoiceTestStatus>("idle");
+  const updateStatus = useCallback((newStatus: VoiceTestStatus) => {
+    statusRef.current = newStatus;
+    setStatus(newStatus);
+  }, []);
+
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
@@ -73,7 +80,7 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
    * Start a test call.
    */
   const start = useCallback(async () => {
-    setStatus("connecting");
+    updateStatus("connecting");
     setError(null);
     setTranscript([]);
     setIsAssistantSpeaking(false);
@@ -141,70 +148,73 @@ export function useVoiceTest({ assistantId }: UseVoiceTestOptions) {
               const audioBuffer = mulawToAudioBuffer(mulawData, audioContextRef.current);
               enqueueAudio(audioBuffer);
             }
+          }).catch((err) => {
+            console.warn("[VoiceTest] Failed to process audio data:", err);
           });
           return;
         }
 
         // JSON message
+        let msg: any;
         try {
-          const msg = JSON.parse(event.data);
-
-          switch (msg.type) {
-            case "ready":
-              setStatus("active");
-              break;
-
-            case "transcript":
-              if (msg.isFinal && msg.content?.trim()) {
-                setTranscript((prev) => {
-                  const lastMsg = prev[prev.length - 1];
-                  if (lastMsg && lastMsg.role === msg.role) {
-                    return [
-                      ...prev.slice(0, -1),
-                      { role: msg.role, content: msg.content, timestamp: new Date() },
-                    ];
-                  }
-                  return [...prev, { role: msg.role, content: msg.content, timestamp: new Date() }];
-                });
-              }
-              break;
-
-            case "speaking":
-              setIsAssistantSpeaking(msg.speaking);
-              break;
-
-            case "ended":
-              setStatus("ended");
-              break;
-
-            case "error":
-              setError(msg.message || "An error occurred");
-              setStatus("error");
-              break;
-          }
+          msg = JSON.parse(event.data);
         } catch {
-          // Ignore invalid JSON
+          return; // Non-JSON text message — ignore
+        }
+
+        switch (msg.type) {
+          case "ready":
+            updateStatus("active");
+            break;
+
+          case "transcript":
+            if (msg.isFinal && msg.content?.trim()) {
+              setTranscript((prev) => {
+                const lastMsg = prev[prev.length - 1];
+                if (lastMsg && lastMsg.role === msg.role) {
+                  return [
+                    ...prev.slice(0, -1),
+                    { role: msg.role, content: msg.content, timestamp: new Date() },
+                  ];
+                }
+                return [...prev, { role: msg.role, content: msg.content, timestamp: new Date() }];
+              });
+            }
+            break;
+
+          case "speaking":
+            setIsAssistantSpeaking(msg.speaking);
+            break;
+
+          case "ended":
+            updateStatus("ended");
+            break;
+
+          case "error":
+            setError(msg.message || "An error occurred");
+            updateStatus("error");
+            break;
         }
       };
 
       ws.onerror = () => {
         setError("Connection error");
-        setStatus("error");
+        updateStatus("error");
       };
 
-      ws.onclose = (event) => {
-        if (status !== "ended" && status !== "error") {
-          setStatus("ended");
+      ws.onclose = () => {
+        if (statusRef.current !== "ended" && statusRef.current !== "error") {
+          updateStatus("ended");
         }
         cleanup();
       };
     } catch (err) {
       console.error("Failed to start test call:", err);
       setError(err instanceof Error ? err.message : "Failed to start test call");
-      setStatus("error");
+      updateStatus("error");
       cleanup();
     }
-  }, [assistantId, enqueueAudio]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [assistantId, enqueueAudio, updateStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Stop the test call.

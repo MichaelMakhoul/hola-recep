@@ -26,7 +26,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No organization found" }, { status: 404 });
     }
 
-    const body = await request.json();
+    let body: { assistantId?: string };
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
     const { assistantId } = body;
 
     if (!assistantId) {

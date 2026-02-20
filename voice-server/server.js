@@ -21,6 +21,7 @@ const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
   "OPENAI_API_KEY",
   "PUBLIC_URL",
+  "TWILIO_ACCOUNT_SID",
   "TWILIO_AUTH_TOKEN",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
@@ -208,7 +209,7 @@ wss.on("connection", (twilioWs) => {
     const callStatus = s.callFailed ? "failed" : "completed";
     const endedReason = s.endedReason || "caller-hangup";
 
-    // Run post-call analysis (non-blocking, best-effort)
+    // Run post-call analysis (best-effort, awaited because results feed into the call record)
     let analysis = null;
     if (transcript && durationSeconds > 5) {
       try {
@@ -479,7 +480,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     const MAX_TOOL_ITERATIONS = 3;
     let reply = null;
 
-    for (let i = 0; i <= MAX_TOOL_ITERATIONS; i++) {
+    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const t0 = Date.now();
       const result = await getChatResponse(OPENAI_API_KEY, session.messages, llmOptions);
 
@@ -664,7 +665,8 @@ function verifyTestCallToken(token) {
     if (payload.exp && Date.now() > payload.exp) return null;
 
     return payload;
-  } catch {
+  } catch (err) {
+    console.error("[Auth] Test call token verification threw unexpectedly:", err);
     return null;
   }
 }
@@ -764,7 +766,11 @@ testWss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "error", message: "Speech recognition error" }));
           }
         },
-        onClose: () => {},
+        onClose: (code) => {
+          if (code !== 1000 && code !== 1005) {
+            console.error(`[TestSTT] Deepgram connection closed unexpectedly (code=${code})`);
+          }
+        },
       });
 
       // Send greeting
@@ -814,16 +820,21 @@ testWss.on("connection", (ws, req) => {
       }
     } else {
       // JSON control message
+      let msg;
       try {
-        const msg = JSON.parse(data.toString());
+        msg = JSON.parse(data.toString());
+      } catch {
+        return; // Non-JSON text message — ignore
+      }
+      try {
         if (msg.type === "stop") {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "ended", reason: "user-ended" }));
           }
           ws.close(1000, "User ended call");
         }
-      } catch {
-        // Ignore invalid JSON
+      } catch (err) {
+        console.error("[TestCall] Error handling control message:", err);
       }
     }
   });
@@ -858,7 +869,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
     const MAX_TOOL_ITERATIONS = 3;
     let reply = null;
 
-    for (let i = 0; i <= MAX_TOOL_ITERATIONS; i++) {
+    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const t0 = Date.now();
       const result = await getChatResponse(OPENAI_API_KEY, session.messages, llmOptions);
 
@@ -878,7 +889,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
             fnArgs = typeof toolCall.function.arguments === "string"
               ? JSON.parse(toolCall.function.arguments)
               : toolCall.function.arguments;
-          } catch {
+          } catch (parseErr) {
+            console.error(`[TestToolCall] Failed to parse arguments for ${fnName}:`, parseErr);
             fnArgs = {};
           }
 
@@ -903,6 +915,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
     if (!reply) {
       reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
+      console.warn(`[TestPipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (assistantId=${session.assistantId})`);
     }
 
     // Send TTS audio back to browser
@@ -934,8 +947,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
         ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: fallback, isFinal: true }));
         ws.send(audioBuffer);
       }
-    } catch {
-      // Give up
+    } catch (fallbackErr) {
+      console.error("[TestPipeline] Fallback TTS also failed — user heard nothing:", fallbackErr.message || fallbackErr);
     }
   } finally {
     session.isProcessing = false;

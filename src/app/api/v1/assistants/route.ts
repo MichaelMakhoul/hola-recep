@@ -196,8 +196,8 @@ export async function POST(request: Request) {
       const vapiAssistant = await vapi.createAssistant({
         name: validatedData.name,
         model: {
-          provider: validatedData.modelProvider,
-          model: validatedData.model,
+          provider: "openai",
+          model: "gpt-4o-mini",
           messages: [{ role: "system", content: vapiSystemPrompt }],
           toolIds,
         },

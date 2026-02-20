@@ -88,8 +88,6 @@ fly deploy
 
 ## Coexistence with Vapi
 
-Phone numbers route to either Vapi or self-hosted based on the `voice_provider` column:
-- `'vapi'` (default) — Twilio webhook points to Vapi
-- `'self_hosted'` — Twilio webhook points to this server's `/twiml` endpoint
-
-Both can run simultaneously on different phone numbers within the same organization.
+All Twilio-provisioned numbers (including US) use this voice server as the primary pipeline.
+Vapi assistants are created as a silent backup via dual-write (DB first, Vapi second, non-fatal).
+The `voice_provider` column in `phone_numbers` tracks this (`'self_hosted'` for Twilio numbers).
