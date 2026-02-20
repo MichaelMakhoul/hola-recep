@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+const isDev = process.env.NODE_ENV === "development";
+
 const securityHeaders = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
@@ -17,11 +19,13 @@ const securityHeaders = [
     key: "Content-Security-Policy",
     value: [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://js.stripe.com https://cdn.jsdelivr.net",
+      // Next.js dev mode uses eval() for source maps — 'unsafe-eval' is only added in development
+      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://js.stripe.com https://cdn.jsdelivr.net`,
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
       "img-src 'self' data: blob: https://*.supabase.co https://api.dicebear.com",
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.stripe.com https://api.vapi.ai https://api.elevenlabs.io https://api.cal.com",
+      `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.stripe.com https://api.vapi.ai https://api.elevenlabs.io https://api.cal.com wss://*.fly.dev${isDev ? " ws://localhost:* wss://localhost:*" : ""}`,
+      "worker-src 'self' blob:",
       "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
       "media-src 'self' blob: https://*.supabase.co",
       "object-src 'none'",

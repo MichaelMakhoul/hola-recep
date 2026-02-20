@@ -118,13 +118,17 @@ export async function PATCH(
       }
     }
 
-    // Update in Vapi
+    // Sync to Vapi (non-fatal — self-hosted is primary)
     if (currentPhoneNumber.vapi_phone_number_id) {
-      const vapi = getVapiClient();
-      await vapi.updatePhoneNumber(currentPhoneNumber.vapi_phone_number_id, {
-        assistantId: vapiAssistantId,
-        name: validatedData.friendlyName,
-      });
+      try {
+        const vapi = getVapiClient();
+        await vapi.updatePhoneNumber(currentPhoneNumber.vapi_phone_number_id, {
+          assistantId: vapiAssistantId,
+          name: validatedData.friendlyName,
+        });
+      } catch (vapiErr) {
+        console.warn("[PhoneNumbers] Vapi sync failed on PATCH (non-fatal):", vapiErr);
+      }
     }
 
     // Update in database

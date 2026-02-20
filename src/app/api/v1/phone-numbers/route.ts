@@ -152,9 +152,8 @@ export async function POST(request: Request) {
     let twilioSid: string | null = null;
 
     if (config.phoneProvider === "twilio") {
-      // ── Twilio flow: Vapi doesn't provision numbers in this country,
-      //    so buy from Twilio first, then import into Vapi for call handling ──
-      const { searchAvailableNumbers, purchaseNumber, releaseNumber, getTwilioCredentials } =
+      // ── Twilio flow: buy from Twilio, configure voice webhook, silently import into Vapi ──
+      const { searchAvailableNumbers, purchaseNumber, releaseNumber, configureVoiceWebhook, getTwilioCredentials } =
         await import("@/lib/twilio/client");
 
       // 1. Search Twilio for a number matching area code
@@ -171,7 +170,20 @@ export async function POST(request: Request) {
       twilioSid = purchased.sid;
       phoneNumber = purchased.number;
 
-      // 3. Import into Vapi
+      // 3. Configure Twilio voice webhook to point at voice server
+      const voiceServerUrl = process.env.VOICE_SERVER_PUBLIC_URL;
+      if (voiceServerUrl) {
+        try {
+          await configureVoiceWebhook(twilioSid, `${voiceServerUrl}/twiml`);
+        } catch (webhookErr) {
+          console.error(`[PhoneNumbers] Failed to configure voice webhook for ${phoneNumber}:`, webhookErr);
+          // Non-fatal — the number still works, just needs manual webhook config
+        }
+      } else {
+        console.warn("[PhoneNumbers] VOICE_SERVER_PUBLIC_URL not set — voice webhook not configured");
+      }
+
+      // 4. Silently import into Vapi as backup (non-fatal)
       try {
         const twilioCreds = getTwilioCredentials();
         const vapiResult = await vapi.importTwilioNumber({
@@ -183,16 +195,9 @@ export async function POST(request: Request) {
         });
         vapiPhoneNumberId = vapiResult.id;
       } catch (vapiError) {
-        // Rollback: release from Twilio
-        try {
-          await releaseNumber(twilioSid);
-        } catch (e) {
-          console.error(
-            `CRITICAL: Orphaned Twilio number! SID=${twilioSid}, number=${phoneNumber}. Manual release required.`,
-            e
-          );
-        }
-        throw vapiError;
+        // Vapi import failure is non-fatal — self-hosted is primary
+        console.warn(`[PhoneNumbers] Vapi import failed for ${phoneNumber} (non-fatal):`, vapiError);
+        vapiPhoneNumberId = ""; // Will be stored as empty string
       }
     } else {
       // ── Vapi flow: buy directly from Vapi (free SIP numbers) ──
@@ -220,11 +225,13 @@ export async function POST(request: Request) {
       organization_id: membership.organization_id,
       assistant_id: validatedData.assistantId,
       phone_number: phoneNumber,
-      vapi_phone_number_id: vapiPhoneNumberId,
+      vapi_phone_number_id: vapiPhoneNumberId || null,
       twilio_sid: twilioSid,
       friendly_name: resolvedFriendlyName,
       is_active: true,
       source_type: validatedData.sourceType,
+      // Twilio-provisioned numbers use self-hosted voice server
+      voice_provider: config.phoneProvider === "twilio" ? "self_hosted" : "vapi",
     };
 
     if (validatedData.sourceType === "forwarded") {
@@ -244,11 +251,13 @@ export async function POST(request: Request) {
       .single();
 
     if (error) {
-      // Rollback: delete from Vapi + release from Twilio
-      try {
-        await vapi.deletePhoneNumber(vapiPhoneNumberId);
-      } catch (e) {
-        console.error(`Failed to rollback Vapi phone number (ID=${vapiPhoneNumberId}):`, e);
+      // Rollback: delete from Vapi (if we have one) + release from Twilio
+      if (vapiPhoneNumberId) {
+        try {
+          await vapi.deletePhoneNumber(vapiPhoneNumberId);
+        } catch (e) {
+          console.error(`Failed to rollback Vapi phone number (ID=${vapiPhoneNumberId}):`, e);
+        }
       }
       if (twilioSid) {
         try {

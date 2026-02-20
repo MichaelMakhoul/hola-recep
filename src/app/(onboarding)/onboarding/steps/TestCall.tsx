@@ -8,13 +8,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -28,24 +21,12 @@ import {
   CheckCircle2,
   Volume2,
   AlertCircle,
-  Info,
   Settings,
   ChevronDown,
   Play,
   Square,
-  MessageSquare,
 } from "lucide-react";
-import { useVapi, type VapiCallStatus } from "@/lib/vapi/use-vapi";
-import {
-  getAudioDevices,
-  requestMicrophonePermission,
-  getSelectedMicrophone,
-  getSelectedSpeaker,
-  saveSelectedMicrophone,
-  saveSelectedSpeaker,
-  supportsOutputDeviceSelection,
-  type AudioDevice,
-} from "@/lib/audio/device-selection";
+import { useVoiceTest } from "@/lib/voice-test";
 import {
   playVoicePreview,
   stopVoicePreview,
@@ -56,6 +37,7 @@ import {
 
 interface TestCallProps {
   assistantData: {
+    assistantId: string;
     assistantName: string;
     systemPrompt: string;
     firstMessage: string;
@@ -64,89 +46,30 @@ interface TestCallProps {
   onTestComplete: () => void;
 }
 
-// Test scenario prompts
-const TEST_SCENARIOS = [
-  { id: "appointment", label: "Schedule Appointment", prompt: "I'd like to schedule an appointment" },
-  { id: "hours", label: "Ask Hours", prompt: "What are your hours of operation?" },
-  { id: "pricing", label: "Pricing", prompt: "I have a question about pricing" },
-  { id: "emergency", label: "Emergency", prompt: "This is an emergency" },
-];
-
 export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
   const [duration, setDuration] = useState(0);
-  const [isVapiAvailable, setIsVapiAvailable] = useState<boolean | null>(null);
 
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [maxDuration, setMaxDuration] = useState(3); // minutes
-  const [selectedScenario, setSelectedScenario] = useState<string | null>(null);
-
-  // Audio device state
-  const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
-  const [speakers, setSpeakers] = useState<AudioDevice[]>([]);
-  const [selectedMic, setSelectedMic] = useState<string>("default");
-  const [selectedSpeaker, setSelectedSpeaker] = useState<string>("default");
-  const [supportsOutputSelection, setSupportsOutputSelection] = useState(false);
 
   // Voice preview state
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const hasInitializedRef = useRef(false);
-  const autoEndTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const {
     status,
     isMuted,
     transcript,
     error,
-    volumeLevel,
     isAssistantSpeaking,
-    initialize,
-    startWithConfig,
+    start,
     stop,
     toggleMute,
     reset,
-  } = useVapi();
-
-  // Load audio devices on mount
-  useEffect(() => {
-    async function loadDevices() {
-      // Request permission first to get device labels
-      await requestMicrophonePermission();
-
-      const devices = await getAudioDevices();
-      setMicrophones(devices.microphones);
-      setSpeakers(devices.speakers);
-      setSupportsOutputSelection(supportsOutputDeviceSelection());
-
-      // Restore saved preferences
-      const savedMic = getSelectedMicrophone();
-      const savedSpeaker = getSelectedSpeaker();
-
-      if (savedMic && devices.microphones.some(d => d.deviceId === savedMic)) {
-        setSelectedMic(savedMic);
-      }
-      if (savedSpeaker && devices.speakers.some(d => d.deviceId === savedSpeaker)) {
-        setSelectedSpeaker(savedSpeaker);
-      }
-    }
-
-    loadDevices();
-  }, []);
-
-  // Check if Vapi public key is available and initialize
-  useEffect(() => {
-    const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
-    if (publicKey && !hasInitializedRef.current) {
-      hasInitializedRef.current = true;
-      initialize(publicKey);
-      setIsVapiAvailable(true);
-    } else if (!publicKey) {
-      setIsVapiAvailable(false);
-    }
-  }, [initialize]);
+  } = useVoiceTest({ assistantId: assistantData.assistantId });
 
   // Handle duration tracking and auto-end
   useEffect(() => {
@@ -154,7 +77,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
       durationIntervalRef.current = setInterval(() => {
         setDuration((d) => {
           const newDuration = d + 1;
-          // Check if we've reached max duration
           if (newDuration >= maxDuration * 60) {
             stop();
           }
@@ -172,9 +94,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
       if (durationIntervalRef.current) {
         clearInterval(durationIntervalRef.current);
       }
-      if (autoEndTimeoutRef.current) {
-        clearTimeout(autoEndTimeoutRef.current);
-      }
     };
   }, [status, maxDuration, stop]);
 
@@ -183,16 +102,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
     return () => {
       stopVoicePreview();
     };
-  }, []);
-
-  const handleMicChange = useCallback((deviceId: string) => {
-    setSelectedMic(deviceId);
-    saveSelectedMicrophone(deviceId);
-  }, []);
-
-  const handleSpeakerChange = useCallback((deviceId: string) => {
-    setSelectedSpeaker(deviceId);
-    saveSelectedSpeaker(deviceId);
   }, []);
 
   const handleVoicePreview = useCallback(async () => {
@@ -204,7 +113,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
 
     setPreviewError(null);
     await playVoicePreview(assistantData.voiceId || "EXAVITQu4vr4xnSDxMaL", {
-      outputDeviceId: selectedSpeaker !== "default" ? selectedSpeaker : undefined,
       onStart: () => setIsPreviewPlaying(true),
       onEnd: () => setIsPreviewPlaying(false),
       onError: (err) => {
@@ -212,45 +120,11 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
         setPreviewError(err);
       },
     });
-  }, [assistantData.voiceId, selectedSpeaker, isPreviewPlaying]);
+  }, [assistantData.voiceId, isPreviewPlaying]);
 
   const handleStartCall = async () => {
     setDuration(0);
-
-    // Build system prompt with scenario context if selected
-    let systemPrompt = assistantData.systemPrompt;
-    if (selectedScenario) {
-      const scenario = TEST_SCENARIOS.find(s => s.id === selectedScenario);
-      if (scenario) {
-        systemPrompt += `\n\n[TEST SCENARIO: The caller is likely going to say: "${scenario.prompt}"]`;
-      }
-    }
-
-    // Start with inline configuration for the test call
-    await startWithConfig({
-      model: {
-        provider: "openai",
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
-          },
-        ],
-      },
-      voice: {
-        provider: "11labs",
-        voiceId: assistantData.voiceId || "EXAVITQu4vr4xnSDxMaL", // Default to Sarah
-      },
-      overrides: {
-        firstMessage: assistantData.firstMessage,
-        recordingEnabled: false, // Don't record test calls
-      },
-      audioDevices: {
-        inputDeviceId: selectedMic !== "default" ? selectedMic : undefined,
-        outputDeviceId: selectedSpeaker !== "default" ? selectedSpeaker : undefined,
-      },
-    });
+    await start();
   };
 
   const handleEndCall = () => {
@@ -259,7 +133,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
 
   const handleTryAgain = () => {
     setDuration(0);
-    setSelectedScenario(null);
     reset();
   };
 
@@ -289,19 +162,8 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
         </p>
       </div>
 
-      {/* Vapi Not Available Warning */}
-      {isVapiAvailable === false && (
-        <Alert>
-          <Info className="h-4 w-4" />
-          <AlertDescription>
-            Voice testing is not configured. You can skip this step and test your
-            assistant later from the dashboard once a phone number is assigned.
-          </AlertDescription>
-        </Alert>
-      )}
-
       {/* Voice Preview */}
-      {displayStatus === "idle" && isVapiAvailable !== false && (
+      {displayStatus === "idle" && (
         <Card className="p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -337,7 +199,7 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
       )}
 
       {/* Settings Panel */}
-      {displayStatus === "idle" && isVapiAvailable !== false && (
+      {displayStatus === "idle" && (
         <Collapsible open={settingsOpen} onOpenChange={setSettingsOpen}>
           <CollapsibleTrigger asChild>
             <Button variant="ghost" className="w-full justify-between">
@@ -354,45 +216,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
           </CollapsibleTrigger>
           <CollapsibleContent>
             <Card className="mt-2 p-4 space-y-4">
-              {/* Microphone Selection */}
-              <div className="space-y-2">
-                <Label htmlFor="microphone">Microphone</Label>
-                <Select value={selectedMic} onValueChange={handleMicChange}>
-                  <SelectTrigger id="microphone">
-                    <SelectValue placeholder="Select microphone" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default">Default Device</SelectItem>
-                    {microphones.map((mic) => (
-                      <SelectItem key={mic.deviceId} value={mic.deviceId}>
-                        {mic.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Speaker Selection */}
-              {supportsOutputSelection && (
-                <div className="space-y-2">
-                  <Label htmlFor="speaker">Speaker</Label>
-                  <Select value={selectedSpeaker} onValueChange={handleSpeakerChange}>
-                    <SelectTrigger id="speaker">
-                      <SelectValue placeholder="Select speaker" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="default">Default Device</SelectItem>
-                      {speakers.map((speaker) => (
-                        <SelectItem key={speaker.deviceId} value={speaker.deviceId}>
-                          {speaker.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {/* Max Duration Slider */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Max Duration</Label>
@@ -416,37 +239,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
         </Collapsible>
       )}
 
-      {/* Test Scenarios */}
-      {displayStatus === "idle" && isVapiAvailable !== false && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <MessageSquare className="h-4 w-4" />
-            <span>Try a scenario:</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {TEST_SCENARIOS.map((scenario) => (
-              <Button
-                key={scenario.id}
-                variant={selectedScenario === scenario.id ? "default" : "outline"}
-                size="sm"
-                onClick={() =>
-                  setSelectedScenario(
-                    selectedScenario === scenario.id ? null : scenario.id
-                  )
-                }
-              >
-                {scenario.label}
-              </Button>
-            ))}
-          </div>
-          {selectedScenario && (
-            <p className="text-sm text-muted-foreground italic">
-              &quot;{TEST_SCENARIOS.find(s => s.id === selectedScenario)?.prompt}&quot;
-            </p>
-          )}
-        </div>
-      )}
-
       {/* Call Status Card */}
       <Card className="p-6">
         <div className="flex flex-col items-center space-y-4">
@@ -456,15 +248,9 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
                 <Phone className="h-10 w-10 text-primary" />
               </div>
               <p className="text-center text-muted-foreground">
-                {isVapiAvailable === false
-                  ? "Voice testing is not available at the moment"
-                  : "Click the button below to start a test call with your AI receptionist"}
+                Click the button below to start a test call with your AI receptionist
               </p>
-              <Button
-                size="lg"
-                onClick={handleStartCall}
-                disabled={isVapiAvailable === false}
-              >
+              <Button size="lg" onClick={handleStartCall}>
                 <Phone className="mr-2 h-5 w-5" />
                 Start Test Call
               </Button>
@@ -503,20 +289,6 @@ export function TestCall({ assistantData, onTestComplete }: TestCallProps) {
                 </Badge>
               </div>
 
-              {/* Volume indicator */}
-              {isAssistantSpeaking && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Volume2 className="h-4 w-4" />
-                  <div className="h-2 w-20 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full bg-green-500 transition-all"
-                      style={{ width: `${Math.min(volumeLevel * 100, 100)}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Nearing limit warning */}
               {isNearingLimit && (
                 <p className="text-sm text-destructive">
                   Call ending in {remainingSeconds} seconds

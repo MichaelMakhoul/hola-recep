@@ -3,19 +3,24 @@
  * container=none prevents WAV header artifacts.
  */
 
+const DEFAULT_VOICE = "aura-asteria-en";
+
 /**
  * @param {string} apiKey
  * @param {string} text
+ * @param {{ voice?: string }} [options]
  * @returns {Promise<Buffer>} Raw mulaw audio bytes
  */
-async function synthesizeSpeech(apiKey, text) {
+async function synthesizeSpeech(apiKey, text, options) {
   if (!text || !text.trim()) {
     throw new Error("synthesizeSpeech called with empty text");
   }
 
+  const voice = options?.voice || DEFAULT_VOICE;
+
   const url =
     "https://api.deepgram.com/v1/speak?" +
-    "model=aura-asteria-en" +
+    `model=${voice}` +
     "&encoding=mulaw" +
     "&sample_rate=8000" +
     "&container=none";

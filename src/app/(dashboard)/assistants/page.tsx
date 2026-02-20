@@ -15,8 +15,6 @@ interface Assistant {
   id: string;
   name: string;
   system_prompt: string;
-  voice_provider: string;
-  voice_id: string;
   is_active: boolean;
   phone_numbers?: { count: number }[];
 }
@@ -76,7 +74,7 @@ export default async function AssistantsPage() {
                     <div>
                       <CardTitle className="text-lg">{assistant.name}</CardTitle>
                       <CardDescription className="text-xs">
-                        {assistant.voice_provider} / {assistant.voice_id}
+                        AI Receptionist
                       </CardDescription>
                     </div>
                   </div>

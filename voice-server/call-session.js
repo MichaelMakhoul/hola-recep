@@ -1,6 +1,6 @@
 const { WebSocket } = require("ws");
 
-const MAX_MESSAGES = 21; // system prompt + up to 20 conversation messages (typically 10 turn pairs)
+const MAX_MESSAGES = 21; // system prompt + up to 20 messages (user/assistant turns + tool call/result messages)
 
 class CallSession {
   constructor(callSid) {
@@ -19,7 +19,9 @@ class CallSession {
     this.organizationId = null;
     this.assistantId = null;
     this.phoneNumberId = null;
-    this.model = null;
+    this.calendarEnabled = false;
+    this.transferRules = [];
+    this.deepgramVoice = null;
     this.callFailed = false;
     this.endedReason = null;
   }
@@ -45,10 +47,11 @@ class CallSession {
 
   /**
    * Build a transcript string from the conversation messages.
+   * Excludes tool call internals — only user and assistant content messages.
    */
   getTranscript() {
     return this.messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
+      .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
       .map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.content}`)
       .join("\n");
   }

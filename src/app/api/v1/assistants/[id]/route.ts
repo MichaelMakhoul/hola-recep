@@ -8,6 +8,7 @@ import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getOrgScheduleContext } from "@/lib/supabase/get-org-schedule-context";
 import { getAggregatedKnowledgeBase } from "@/lib/knowledge-base";
 import { z } from "zod";
+import { resolveVoiceId } from "@/lib/voices";
 
 interface Membership {
   organization_id: string;
@@ -39,7 +40,7 @@ const updateAssistantSchema = z.object({
   knowledgeBase: z.any().optional(),
   tools: z.any().optional(),
   isActive: z.boolean().optional(),
-  promptConfig: promptConfigSchema.optional(),
+  promptConfig: promptConfigSchema.nullable().optional(),
   settings: z.object({
     recordingEnabled: z.boolean().optional(),
     recordingDisclosure: z.string().optional(),
@@ -135,6 +136,11 @@ export async function PATCH(
     const body = await request.json();
     const validatedData = updateAssistantSchema.parse(body);
 
+    // Resolve legacy short-name voice IDs (e.g. "rachel") to ElevenLabs IDs
+    if (validatedData.voiceId) {
+      validatedData.voiceId = resolveVoiceId(validatedData.voiceId);
+    }
+
     // Merge incoming settings with existing to preserve fields like industry
     const mergedSettings = {
       ...(currentAssistant.settings || {}),
@@ -219,8 +225,8 @@ export async function PATCH(
         }
 
         vapiUpdate.model = {
-          provider: validatedData.modelProvider || currentAssistant.model_provider,
-          model: validatedData.model || currentAssistant.model,
+          provider: "openai",
+          model: "gpt-4o-mini",
           messages: [{ role: "system", content: vapiSystemPrompt }],
           toolIds,
         };
@@ -267,16 +273,13 @@ export async function PATCH(
         try {
           await vapi.updateAssistant(currentAssistant.vapi_assistant_id, vapiUpdate);
         } catch (vapiError) {
-          console.error("Failed to update Vapi assistant:", vapiError);
-          return NextResponse.json(
-            { error: "Failed to sync changes with voice platform. Please try again." },
-            { status: 502 }
-          );
+          // Vapi sync failure is non-fatal — self-hosted reads from DB
+          console.warn("[Assistants] Vapi sync failed on PATCH (non-fatal):", vapiError);
         }
       }
     }
 
-    // Update in database
+    // Update in database (primary — self-hosted voice server reads from here)
     const updateData: Record<string, unknown> = {};
     if (validatedData.name) updateData.name = validatedData.name;
     if (validatedData.systemPrompt) updateData.system_prompt = validatedData.systemPrompt;
