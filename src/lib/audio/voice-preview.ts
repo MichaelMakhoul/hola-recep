@@ -4,54 +4,15 @@
  */
 
 import { setAudioOutputDevice } from "./device-selection";
+import { VOICE_CATALOG, getVoiceById as _getVoiceById } from "@/lib/voices";
+import type { CatalogVoice } from "@/lib/voices";
 
-export interface VoiceInfo {
-  id: string;
-  name: string;
-  description: string;
-  previewText?: string;
-}
-
-// Default voice options with ElevenLabs voice IDs
-export const VOICE_OPTIONS: VoiceInfo[] = [
-  {
-    id: "EXAVITQu4vr4xnSDxMaL",
-    name: "Sarah",
-    description: "Warm, professional female",
-    previewText: "Hello! Thank you for calling. How may I assist you today?",
-  },
-  {
-    id: "21m00Tcm4TlvDq8ikWAM",
-    name: "Rachel",
-    description: "Professional, authoritative female",
-    previewText: "Good morning! I'd be happy to help you with your inquiry.",
-  },
-  {
-    id: "pNInz6obpgDQGcFmaJgB",
-    name: "Adam",
-    description: "Friendly, trustworthy male",
-    previewText: "Hi there! Thanks for reaching out. What can I do for you?",
-  },
-  {
-    id: "jBpfuIE2acCO8z3wKNLl",
-    name: "Emily",
-    description: "Upbeat, enthusiastic female",
-    previewText: "Hey! Great to hear from you! How can I help?",
-  },
-  {
-    id: "yoZ06aMxZJJ28mfd3POQ",
-    name: "Sam",
-    description: "Calm, professional male",
-    previewText: "Thank you for your call. I'm here to help you today.",
-  },
-];
-
-/**
- * Get voice info by ID
- */
-export function getVoiceById(voiceId: string): VoiceInfo | undefined {
-  return VOICE_OPTIONS.find((v) => v.id === voiceId);
-}
+// Re-export from the canonical voice catalog for backward compatibility.
+// Consumers that imported VOICE_OPTIONS / VoiceInfo / getVoiceById from this
+// file (e.g. TestCall pages) will continue to work without changes.
+export type VoiceInfo = CatalogVoice;
+export const VOICE_OPTIONS = VOICE_CATALOG;
+export const getVoiceById = _getVoiceById;
 
 // Audio element for playback (reused to avoid creating multiple)
 let audioElement: HTMLAudioElement | null = null;

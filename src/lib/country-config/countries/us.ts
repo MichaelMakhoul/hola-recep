@@ -142,6 +142,6 @@ export const US_CONFIG: CountryConfig = {
     "619", "657", "720", "773", "786", "813", "904", "954",
   ],
   locale: "en-US",
-  phoneProvider: "vapi",
+  phoneProvider: "twilio",
   twilioCountryCode: "US",
 };

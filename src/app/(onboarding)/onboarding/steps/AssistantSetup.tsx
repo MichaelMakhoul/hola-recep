@@ -4,14 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Volume2 } from "lucide-react";
+import { VoiceSelector } from "@/components/voice-selector";
 import { PromptBuilder } from "@/components/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
 import { getDefaultConfig } from "@/lib/prompt-builder/defaults";
@@ -31,14 +24,6 @@ interface AssistantSetupProps {
   };
   onChange: (data: Partial<AssistantSetupProps["data"]>) => void;
 }
-
-const voiceOptions = [
-  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", description: "Warm, professional female" },
-  { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel", description: "Professional, authoritative female" },
-  { id: "pNInz6obpgDQGcFmaJgB", name: "Adam", description: "Friendly, trustworthy male" },
-  { id: "jBpfuIE2acCO8z3wKNLl", name: "Emily", description: "Upbeat, enthusiastic female" },
-  { id: "yoZ06aMxZJJ28mfd3POQ", name: "Sam", description: "Calm, professional male" },
-];
 
 export function AssistantSetup({ data, businessInfo, onChange }: AssistantSetupProps) {
   const hasInitializedRef = useRef(false);
@@ -122,26 +107,10 @@ export function AssistantSetup({ data, businessInfo, onChange }: AssistantSetupP
       {/* Voice Selection */}
       <div className="space-y-2">
         <Label>Voice Selection</Label>
-        <Select
-          value={data.voiceId || "none"}
-          onValueChange={(v) => onChange({ voiceId: v === "none" ? "" : v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select a voice" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">Select a voice</SelectItem>
-            {voiceOptions.map((voice) => (
-              <SelectItem key={voice.id} value={voice.id}>
-                <div className="flex items-center gap-2">
-                  <Volume2 className="h-4 w-4" />
-                  <span>{voice.name}</span>
-                  <span className="text-muted-foreground">- {voice.description}</span>
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <VoiceSelector
+          value={data.voiceId}
+          onChange={(voiceId) => onChange({ voiceId })}
+        />
         <p className="text-xs text-muted-foreground">
           Choose the voice your AI receptionist will use
         </p>

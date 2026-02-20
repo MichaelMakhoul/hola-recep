@@ -57,10 +57,15 @@ function formatHourForPrompt(time) {
 
 /**
  * Build the scheduling/timezone section appended to every prompt.
- * Self-hosted voice doesn't have calendar tools yet, so the tool instruction
- * is replaced with a softer note about taking messages for scheduling.
+ * When calendarEnabled is true, includes real tool-calling instructions;
+ * otherwise falls back to message-taking guidance.
+ *
+ * @param {string} [timezone]
+ * @param {object} [businessHours]
+ * @param {number} [defaultAppointmentDuration]
+ * @param {boolean} [calendarEnabled=false]
  */
-function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration) {
+function buildSchedulingSection(timezone, businessHours, defaultAppointmentDuration, calendarEnabled) {
   const lines = [];
   lines.push("TIMEZONE & SCHEDULING:");
 
@@ -89,12 +94,29 @@ function buildSchedulingSection(timezone, businessHours, defaultAppointmentDurat
     lines.push(`Standard appointment duration is ${defaultAppointmentDuration} minutes.`);
   }
 
-  // Phase 1: no calendar tool calling — take messages instead
-  lines.push(
-    "You do NOT have the ability to book appointments directly. " +
-    "If the caller wants to schedule, collect their preferred date/time, " +
-    "confirm the details, and let them know someone will confirm the appointment."
-  );
+  if (calendarEnabled) {
+    lines.push(
+      "SCHEDULING TOOLS:",
+      "You have access to the following scheduling functions. Use them to help callers with appointments:",
+      "- get_current_datetime: Call this FIRST to know today's date before checking availability or booking.",
+      "- check_availability: Check available appointment slots for a specific date (YYYY-MM-DD format).",
+      "- book_appointment: Book an appointment. Requires datetime (ISO format), caller name, and phone number.",
+      "- cancel_appointment: Cancel an existing appointment by the caller's phone number.",
+      "",
+      "SCHEDULING WORKFLOW:",
+      "1. When a caller wants to book, first call get_current_datetime to know today's date.",
+      "2. Ask what date they prefer, then call check_availability for that date.",
+      "3. Present the available times and let the caller choose.",
+      "4. Collect their name and phone number, then call book_appointment.",
+      "5. Confirm the booking details with the caller."
+    );
+  } else {
+    lines.push(
+      "You do NOT have the ability to book appointments directly. " +
+      "If the caller wants to schedule, collect their preferred date/time, " +
+      "confirm the details, and let them know someone will confirm the appointment."
+    );
+  }
 
   return lines.join("\n");
 }
@@ -221,7 +243,7 @@ function buildFieldCollectionSection(fields) {
   return section;
 }
 
-function buildBehaviorsSection(behaviors) {
+function buildBehaviorsSection(behaviors, options) {
   const lines = [];
   lines.push("CAPABILITIES:");
 
@@ -250,9 +272,15 @@ function buildBehaviorsSection(behaviors) {
   }
 
   if (behaviors.transferToHuman) {
-    lines.push(
-      "- TRANSFERS: If a caller requests to speak with a person, or if the situation requires human attention, offer to transfer the call."
-    );
+    if (options && options.hasTransferRules) {
+      lines.push(
+        "- TRANSFERS: You can transfer calls using the transfer_call function. Use it when a caller requests to speak with a person, has a complex issue you cannot resolve, or when there is an emergency."
+      );
+    } else {
+      lines.push(
+        "- TRANSFERS: If a caller requests to speak with a person, or if the situation requires human attention, offer to transfer the call."
+      );
+    }
   }
 
   if (behaviors.afterHoursHandling) {
@@ -267,6 +295,13 @@ function buildBehaviorsSection(behaviors) {
 /**
  * Build a full system prompt from a guided PromptConfig + context.
  * Direct port of the TS version.
+ */
+/**
+ * Build a full system prompt from a guided PromptConfig + context.
+ * Direct port of the TS version.
+ *
+ * @param {object} config
+ * @param {{ businessName?: string, industry?: string, knowledgeBase?: string, timezone?: string, businessHours?: object, defaultAppointmentDuration?: number, calendarEnabled?: boolean }} context
  */
 function buildPromptFromConfig(config, context) {
   const sections = [];
@@ -289,10 +324,12 @@ function buildPromptFromConfig(config, context) {
   }
 
   // 4. Behaviors
-  sections.push(buildBehaviorsSection(config.behaviors));
+  sections.push(buildBehaviorsSection(config.behaviors, {
+    hasTransferRules: context.transferRules && context.transferRules.length > 0,
+  }));
 
   // 5. Timezone, business hours & scheduling
-  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration));
+  sections.push(buildSchedulingSection(context.timezone, context.businessHours, context.defaultAppointmentDuration, context.calendarEnabled));
 
   // 6. Industry guidelines
   const guidelines = getIndustryGuidelines(context.industry);
@@ -328,17 +365,34 @@ function generateGreeting(tone, businessName) {
 /**
  * Build system prompt for an assistant — handles both guided (prompt_config) and legacy prompts.
  * Mirrors the logic in src/lib/knowledge-base/aggregate.ts lines 132-160.
+ *
+ * @param {object} assistant
+ * @param {object} organization
+ * @param {string} knowledgeBase
+ * @param {{ calendarEnabled?: boolean, transferRules?: object[] }} [options]
  */
-function buildSystemPrompt(assistant, organization, knowledgeBase) {
+function buildSystemPrompt(assistant, organization, knowledgeBase, options) {
+  const calendarEnabled = options?.calendarEnabled ?? false;
+  const transferRules = options?.transferRules ?? [];
+
+  // Cap knowledge base to a reasonable size for cost efficiency
+  const MAX_KB_CHARS = 12_000;
+  let trimmedKB = knowledgeBase;
+  if (trimmedKB && trimmedKB.length > MAX_KB_CHARS) {
+    trimmedKB = trimmedKB.slice(0, MAX_KB_CHARS) + "\n\n[Knowledge base truncated for brevity]";
+  }
+
   if (assistant.promptConfig) {
     // Guided prompt builder
     const context = {
       businessName: organization.name,
       industry: organization.industry,
-      knowledgeBase: knowledgeBase || undefined,
+      knowledgeBase: trimmedKB || undefined,
       timezone: organization.timezone,
       businessHours: organization.businessHours,
       defaultAppointmentDuration: organization.defaultAppointmentDuration,
+      calendarEnabled,
+      transferRules,
     };
     return buildPromptFromConfig(assistant.promptConfig, context);
   }
@@ -349,10 +403,10 @@ function buildSystemPrompt(assistant, organization, knowledgeBase) {
   if (systemPrompt.includes("{knowledge_base}")) {
     systemPrompt = systemPrompt.replace(
       /{knowledge_base}/g,
-      knowledgeBase || "No additional business information provided yet."
+      trimmedKB || "No additional business information provided yet."
     );
-  } else if (knowledgeBase) {
-    systemPrompt = `${systemPrompt}\n\nBusiness Information:\n${knowledgeBase}`;
+  } else if (trimmedKB) {
+    systemPrompt = `${systemPrompt}\n\nBusiness Information:\n${trimmedKB}`;
   }
 
   if (systemPrompt.includes("{business_name}")) {
@@ -360,7 +414,7 @@ function buildSystemPrompt(assistant, organization, knowledgeBase) {
   }
 
   // Append scheduling section
-  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration)}`;
+  systemPrompt += `\n\n${buildSchedulingSection(organization.timezone, organization.businessHours, organization.defaultAppointmentDuration, calendarEnabled)}`;
 
   return systemPrompt;
 }

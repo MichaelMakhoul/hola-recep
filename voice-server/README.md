@@ -1,6 +1,6 @@
 # Self-Hosted Voice AI Server
 
-Production voice AI pipeline: Twilio Media Streams + Deepgram STT/TTS + Groq LLM + Supabase.
+Production voice AI pipeline: Twilio Media Streams + Deepgram STT/TTS + OpenAI GPT-4.1-nano + Supabase.
 
 **Cost**: ~$0.076/call vs Vapi's ~$0.39/call (80% reduction).
 
@@ -13,7 +13,7 @@ Caller → Twilio → POST /twiml → <Connect><Stream>
                     ├─ Load assistant/org/KB from Supabase (by phone number)
                     ├─ Build system prompt (guided or legacy)
                     ├─ Twilio audio → Deepgram STT (mulaw passthrough)
-                    ├─ STT transcript → Groq Llama 3.3 70B → Deepgram TTS
+                    ├─ STT transcript → OpenAI GPT-4.1-nano → Deepgram TTS
                     ├─ TTS audio → Twilio (mulaw passthrough, 160-byte chunks)
                     └─ On call end:
                         ├─ Save call record + transcript to Supabase
@@ -28,7 +28,7 @@ Zero audio format conversion — Twilio's mulaw 8kHz passes directly to/from Dee
 ### 1. Get API Keys
 
 - **Deepgram**: Sign up at [console.deepgram.com](https://console.deepgram.com) (free $200 credit)
-- **Groq**: Sign up at [console.groq.com](https://console.groq.com) (free tier: 6K req/day)
+- **OpenAI**: Sign up at [platform.openai.com](https://platform.openai.com)
 - **Twilio**: Use existing account credentials
 - **Supabase**: Use project service role key
 
@@ -73,7 +73,7 @@ Copy the HTTPS URL → set as `PUBLIC_URL` in `.env` → restart the server.
 ```bash
 cd voice-server
 fly launch          # first time
-fly secrets set DEEPGRAM_API_KEY=... GROQ_API_KEY=... # etc.
+fly secrets set DEEPGRAM_API_KEY=... OPENAI_API_KEY=... # etc.
 fly deploy
 ```
 
@@ -82,7 +82,7 @@ fly deploy
 | Stage | Time |
 |---|---|
 | Deepgram endpointing | ~300ms |
-| Groq Llama 3.3 70B | ~400-600ms |
+| OpenAI GPT-4.1-nano | ~300-500ms |
 | Deepgram Aura TTS | ~300-500ms |
 | **Total** | **~1.1-1.5s** |
 

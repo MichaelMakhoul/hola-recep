@@ -35,6 +35,10 @@ interface CallCompletedPayload {
   durationSeconds: number;
   transcript?: string;
   endedReason?: string;
+  summary?: string;
+  callerName?: string;
+  collectedData?: Record<string, unknown>;
+  successEvaluation?: string;
 }
 
 /**
@@ -68,6 +72,10 @@ export async function POST(request: Request) {
     durationSeconds,
     transcript,
     endedReason,
+    summary,
+    callerName,
+    collectedData,
+    successEvaluation,
   } = payload;
 
   if (!organizationId || typeof organizationId !== "string") {
@@ -133,10 +141,15 @@ export async function POST(request: Request) {
       is_spam: spamAnalysis.isSpam,
       spam_score: spamAnalysis.spamScore,
     };
+    // Add structured analysis fields if provided by voice server
+    if (summary) updatePayload.summary = summary;
+    if (callerName) updatePayload.caller_name = callerName;
+    if (collectedData) updatePayload.collected_data = collectedData;
     if (existingMetadata !== null) {
       updatePayload.metadata = {
         ...existingMetadata,
         ended_reason: endedReason,
+        ...(successEvaluation && { successEvaluation }),
         spam_analysis: {
           reasons: spamAnalysis.reasons,
           confidence: spamAnalysis.confidence,

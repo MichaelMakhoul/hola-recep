@@ -15,12 +15,9 @@ interface Assistant {
   first_message: string;
   voice_id: string;
   voice_provider: string;
-  model: string;
-  model_provider: string;
   is_active: boolean;
   settings: Record<string, any>;
   prompt_config: Record<string, any> | null;
-  vapi_assistant_id: string | null;
   created_at: string;
   phone_numbers?: { id: string; phone_number: string }[];
 }

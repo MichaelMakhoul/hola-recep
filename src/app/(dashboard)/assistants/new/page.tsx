@@ -10,33 +10,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { ArrowLeft, Bot } from "lucide-react";
 import { DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templates";
-
-const VOICE_OPTIONS = [
-  { value: "rachel", label: "Rachel (Female)", provider: "11labs" },
-  { value: "drew", label: "Drew (Male)", provider: "11labs" },
-  { value: "clyde", label: "Clyde (Male)", provider: "11labs" },
-  { value: "paul", label: "Paul (Male)", provider: "11labs" },
-  { value: "domi", label: "Domi (Female)", provider: "11labs" },
-  { value: "dave", label: "Dave (Male)", provider: "11labs" },
-  { value: "fin", label: "Fin (Male)", provider: "11labs" },
-  { value: "sarah", label: "Sarah (Female)", provider: "11labs" },
-];
-
-const MODEL_OPTIONS = [
-  { value: "gpt-4o-mini", label: "GPT-4o Mini (Recommended)", provider: "openai" },
-  { value: "gpt-4o", label: "GPT-4o", provider: "openai" },
-  { value: "gpt-4-turbo", label: "GPT-4 Turbo", provider: "openai" },
-];
+import { VoiceSelector } from "@/components/voice-selector";
+import { DEFAULT_VOICE_ID } from "@/lib/voices";
 
 const DEFAULT_SYSTEM_PROMPT = `You are a friendly and professional AI receptionist for {{business_name}}. Your role is to:
 
@@ -57,8 +35,7 @@ export default function NewAssistantPage() {
   const [firstMessage, setFirstMessage] = useState(
     "Hello! Thank you for calling. How can I help you today?"
   );
-  const [voiceId, setVoiceId] = useState("rachel");
-  const [model, setModel] = useState("gpt-4o-mini");
+  const [voiceId, setVoiceId] = useState(DEFAULT_VOICE_ID);
   const [recordingEnabled, setRecordingEnabled] = useState(true);
   const [recordingDisclosure, setRecordingDisclosure] = useState(
     DEFAULT_RECORDING_DISCLOSURE
@@ -85,10 +62,7 @@ export default function NewAssistantPage() {
 
       if (!membership) throw new Error("No organization found");
 
-      const selectedVoice = VOICE_OPTIONS.find((v) => v.value === voiceId);
-      const selectedModel = MODEL_OPTIONS.find((m) => m.value === model);
-
-      // Create assistant in Vapi via API route
+      // Create assistant via API route
       const vapiResponse = await fetch("/api/v1/assistants", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -97,9 +71,7 @@ export default function NewAssistantPage() {
           systemPrompt,
           firstMessage,
           voiceId,
-          voiceProvider: selectedVoice?.provider || "11labs",
-          model,
-          modelProvider: selectedModel?.provider || "openai",
+          voiceProvider: "11labs",
           settings: {
             recordingEnabled,
             recordingDisclosure,
@@ -204,47 +176,18 @@ export default function NewAssistantPage() {
           </CardContent>
         </Card>
 
-        {/* Voice & Model */}
+        {/* Voice */}
         <Card>
           <CardHeader>
-            <CardTitle>Voice & Model</CardTitle>
+            <CardTitle>Voice</CardTitle>
             <CardDescription>
-              Choose the voice and AI model for your assistant
+              Choose the voice for your assistant
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="voice">Voice</Label>
-                <Select value={voiceId} onValueChange={setVoiceId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a voice" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {VOICE_OPTIONS.map((voice) => (
-                      <SelectItem key={voice.value} value={voice.value}>
-                        {voice.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="model">AI Model</Label>
-                <Select value={model} onValueChange={setModel}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {MODEL_OPTIONS.map((m) => (
-                      <SelectItem key={m.value} value={m.value}>
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="space-y-2">
+              <Label>Voice</Label>
+              <VoiceSelector value={voiceId} onChange={setVoiceId} />
             </div>
           </CardContent>
         </Card>

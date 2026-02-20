@@ -32,6 +32,9 @@ interface OnboardingData {
   // Step 4: Go Live
   areaCode: string;
   selectedPlan: string;
+  // Created resources (persisted so we don't re-create)
+  createdOrgId: string;
+  createdAssistantId: string;
 }
 
 const initialData: OnboardingData = {
@@ -48,6 +51,8 @@ const initialData: OnboardingData = {
   testCallCompleted: false,
   areaCode: "",
   selectedPlan: "",
+  createdOrgId: "",
+  createdAssistantId: "",
 };
 
 const steps = [
@@ -122,10 +127,77 @@ export default function OnboardingPage() {
     }
   };
 
-  const handleNext = () => {
-    if (currentStep < 4 && canProceed()) {
-      setCurrentStep((prev) => prev + 1);
+  const handleNext = async () => {
+    if (currentStep >= 4 || !canProceed()) return;
+
+    // When moving from step 2 → 3, create org + assistant so test call works
+    if (currentStep === 2 && !data.createdAssistantId) {
+      setIsLoading(true);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error("You must be logged in.");
+
+        // Create organization
+        const slug = generateSlug(data.businessName);
+        const { data: orgResult, error: orgError } = await (supabase.rpc as any)(
+          "create_organization_with_owner",
+          { org_name: data.businessName, org_slug: slug, org_type: "business" }
+        ) as { data: any[] | null; error: any };
+
+        if (orgError || !orgResult || orgResult.length === 0) {
+          throw new Error(orgError?.message || "Failed to create organization");
+        }
+
+        const orgId = orgResult[0].id;
+
+        // Update org with business info
+        const countryConfig = data.country ? getCountryConfig(data.country) : null;
+        await (supabase as any)
+          .from("organizations")
+          .update({
+            industry: data.industry,
+            business_phone: data.businessPhone || null,
+            business_website: data.businessWebsite || null,
+            country: data.country || "US",
+            timezone: countryConfig?.defaultTimezone || "America/New_York",
+          })
+          .eq("id", orgId);
+
+        // Create assistant
+        const assistantResponse = await fetch("/api/v1/assistants", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: data.assistantName,
+            systemPrompt: data.systemPrompt,
+            firstMessage: data.firstMessage,
+            voiceId: data.voiceId || "EXAVITQu4vr4xnSDxMaL",
+            voiceProvider: "11labs",
+            promptConfig: data.promptConfig || undefined,
+          }),
+        });
+
+        if (!assistantResponse.ok) {
+          const errorData = await assistantResponse.json().catch(() => ({}));
+          throw new Error(errorData.error || "Failed to create assistant");
+        }
+
+        const assistant = await assistantResponse.json();
+        updateData({ createdOrgId: orgId, createdAssistantId: assistant.id });
+      } catch (error: any) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: error.message || "Failed to set up. Please try again.",
+        });
+        setIsLoading(false);
+        return;
+      } finally {
+        setIsLoading(false);
+      }
     }
+
+    setCurrentStep((prev) => prev + 1);
   };
 
   const handleBack = () => {
@@ -152,66 +224,13 @@ export default function OnboardingPage() {
         return;
       }
 
-      // Step 1: Create organization with owner
-      const slug = generateSlug(data.businessName);
-      const { data: orgResult, error: orgError } = await (supabase.rpc as any)(
-        "create_organization_with_owner",
-        {
-          org_name: data.businessName,
-          org_slug: slug,
-          org_type: "business",
-        }
-      ) as { data: any[] | null; error: any };
-
-      if (orgError || !orgResult || orgResult.length === 0) {
-        throw new Error(orgError?.message || "Failed to create organization");
+      // Org + assistant already created in step 2→3 transition
+      const orgId = data.createdOrgId;
+      if (!orgId) {
+        throw new Error("Organization not found. Please go back and try again.");
       }
 
-      const orgId = orgResult[0].id;
-
-      // Step 2: Update organization with additional business info
-      // Note: Using type assertion due to Supabase SSR client type inference limitation
-      const countryConfig = data.country ? getCountryConfig(data.country) : null;
-      const { error: updateOrgError } = await (supabase as any)
-        .from("organizations")
-        .update({
-          industry: data.industry,
-          business_phone: data.businessPhone || null,
-          business_website: data.businessWebsite || null,
-          country: data.country || "US",
-          timezone: countryConfig?.defaultTimezone || "America/New_York",
-        })
-        .eq("id", orgId);
-
-      if (updateOrgError) {
-        console.error("Failed to update org details:", updateOrgError);
-        // Non-fatal, continue
-      }
-
-      // Step 3: Create the AI assistant via API (creates in Vapi + database)
-      const assistantResponse = await fetch("/api/v1/assistants", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: data.assistantName,
-          systemPrompt: data.systemPrompt,
-          firstMessage: data.firstMessage,
-          voiceId: data.voiceId || "EXAVITQu4vr4xnSDxMaL",
-          voiceProvider: "11labs",
-          model: "gpt-4o-mini",
-          modelProvider: "openai",
-          promptConfig: data.promptConfig || undefined,
-        }),
-      });
-
-      if (!assistantResponse.ok) {
-        const errorData = await assistantResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || "Failed to create assistant");
-      }
-
-      const assistant = await assistantResponse.json();
-
-      // Step 4: Create subscription record (free trial)
+      // Create subscription record (free trial)
       const trialEnd = new Date();
       trialEnd.setDate(trialEnd.getDate() + 14); // 14-day trial
 
@@ -370,6 +389,7 @@ export default function OnboardingPage() {
               {currentStep === 3 && (
                 <TestCall
                   assistantData={{
+                    assistantId: data.createdAssistantId,
                     assistantName: data.assistantName,
                     systemPrompt: data.systemPrompt,
                     firstMessage: data.firstMessage,
@@ -418,9 +438,18 @@ export default function OnboardingPage() {
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Button>
               ) : (
-                <Button onClick={handleNext} disabled={!canProceed() || isCompleting}>
-                  Continue
-                  <ArrowRight className="ml-2 h-4 w-4" />
+                <Button onClick={handleNext} disabled={!canProceed() || isCompleting || isLoading}>
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Setting up...
+                    </>
+                  ) : (
+                    <>
+                      Continue
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </>
+                  )}
                 </Button>
               )
             ) : (

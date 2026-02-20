@@ -6,17 +6,20 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { CallSession } = require("./call-session");
 const { openDeepgramStream } = require("./services/deepgram-stt");
-const { getChatResponse } = require("./services/groq-llm");
+const { getChatResponse } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
-const { loadCallContext } = require("./lib/call-context");
+const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
 const { createCallRecord, completeCallRecord, notifyCallCompleted } = require("./lib/call-logger");
+const { calendarToolDefinitions, transferToolDefinition, executeToolCall } = require("./services/tool-executor");
+const { analyzeCallTranscript } = require("./services/post-call-analysis");
+const { getDeepgramVoice } = require("./lib/voice-mapping");
 const { getSupabase } = require("./lib/supabase");
 
 // Validate required env vars before deriving any constants
 const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
-  "GROQ_API_KEY",
+  "OPENAI_API_KEY",
   "PUBLIC_URL",
   "TWILIO_AUTH_TOKEN",
   "SUPABASE_URL",
@@ -31,15 +34,21 @@ for (const key of REQUIRED_ENV) {
 
 const PORT = process.env.PORT || 3001;
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const WS_SECRET = process.env.TWILIO_AUTH_TOKEN;
 const WS_URL = PUBLIC_URL.replace(/^http/, "ws") + "/ws/audio";
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 
+const TEST_CALL_SECRET = process.env.TEST_CALL_SECRET;
+
 if (!INTERNAL_API_URL || !INTERNAL_API_SECRET) {
   console.warn("[Startup] INTERNAL_API_URL or INTERNAL_API_SECRET not set — post-call notifications will be skipped");
+}
+
+if (!TEST_CALL_SECRET) {
+  console.warn("[Startup] TEST_CALL_SECRET not set — browser test calls will be disabled");
 }
 
 // Global error handlers to prevent silent crashes
@@ -178,7 +187,7 @@ app.get("/health", async (req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws/audio" });
+const wss = new WebSocketServer({ noServer: true });
 
 // Active sessions keyed by streamSid
 const sessions = new Map();
@@ -199,6 +208,19 @@ wss.on("connection", (twilioWs) => {
     const callStatus = s.callFailed ? "failed" : "completed";
     const endedReason = s.endedReason || "caller-hangup";
 
+    // Run post-call analysis (non-blocking, best-effort)
+    let analysis = null;
+    if (transcript && durationSeconds > 5) {
+      try {
+        analysis = await analyzeCallTranscript(transcript);
+        if (analysis) {
+          console.log(`[PostCall] Analysis complete: caller=${analysis.callerName || "unknown"}, reason=${analysis.callerPhoneReason || "unknown"}, success=${analysis.successEvaluation}`);
+        }
+      } catch (err) {
+        console.error("[PostCall] Analysis failed:", err);
+      }
+    }
+
     // Complete call record if we have one
     if (s.callRecordId) {
       try {
@@ -206,6 +228,10 @@ wss.on("connection", (twilioWs) => {
           status: callStatus,
           durationSeconds,
           transcript,
+          summary: analysis?.summary || null,
+          callerName: analysis?.callerName || null,
+          collectedData: analysis?.collectedData || null,
+          successEvaluation: analysis?.successEvaluation || null,
         });
       } catch (err) {
         console.error("[Cleanup] Failed to complete call record:", err);
@@ -230,6 +256,10 @@ wss.on("connection", (twilioWs) => {
         durationSeconds,
         transcript,
         endedReason,
+        summary: analysis?.summary || undefined,
+        callerName: analysis?.callerName || undefined,
+        collectedData: analysis?.collectedData || undefined,
+        successEvaluation: analysis?.successEvaluation || undefined,
       }).catch((err) =>
         console.error("[Cleanup] Failed to notify call completed:", err)
       );
@@ -298,13 +328,19 @@ wss.on("connection", (twilioWs) => {
           session.organizationId = context.organizationId;
           session.assistantId = context.assistantId;
           session.phoneNumberId = context.phoneNumberId;
-          session.model = context.assistant.settings?.model || null;
+          session.calendarEnabled = context.calendarEnabled || false;
+          session.transferRules = context.transferRules || [];
+          session.deepgramVoice = getDeepgramVoice(context.assistant.settings?.voiceId);
 
           // Build system prompt (guided or legacy)
           const systemPrompt = buildSystemPrompt(
             context.assistant,
             context.organization,
-            context.knowledgeBase
+            context.knowledgeBase,
+            {
+              calendarEnabled: session.calendarEnabled,
+              transferRules: session.transferRules,
+            }
           );
           session.setSystemPrompt(systemPrompt);
 
@@ -417,7 +453,8 @@ wss.on("connection", (twilioWs) => {
 });
 
 /**
- * Handle final user transcript: get LLM response, synthesize, send back.
+ * Handle final user transcript: get LLM response (with optional tool calling loop),
+ * synthesize, and send back.
  */
 async function handleUserSpeech(session, twilioWs, transcript) {
   if (!session || session.isProcessing) return;
@@ -432,16 +469,91 @@ async function handleUserSpeech(session, twilioWs, transcript) {
   try {
     session.addMessage("user", transcript);
 
-    const t0 = Date.now();
-    const reply = await getChatResponse(GROQ_API_KEY, session.messages, {
-      model: session.model,
-    });
-    console.log(`[LLM] (${Date.now() - t0}ms) "${reply}"`);
+    // Build LLM options — include tools based on capabilities
+    const llmOptions = {};
+    const tools = [];
+    if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
+    if (session.transferRules && session.transferRules.length > 0) tools.push(transferToolDefinition);
+    if (tools.length > 0) llmOptions.tools = tools;
+
+    const MAX_TOOL_ITERATIONS = 3;
+    let reply = null;
+
+    for (let i = 0; i <= MAX_TOOL_ITERATIONS; i++) {
+      const t0 = Date.now();
+      const result = await getChatResponse(OPENAI_API_KEY, session.messages, llmOptions);
+
+      if (result.type === "content") {
+        reply = result.content;
+        console.log(`[LLM] (${Date.now() - t0}ms) "${reply}"`);
+        break;
+      }
+
+      // Tool call response — execute tools and loop
+      if (result.type === "tool_calls") {
+        const toolCalls = result.toolCalls;
+        console.log(`[LLM] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
+
+        // Add the assistant's tool call message to conversation
+        session.messages.push(result.message);
+
+        // Execute each tool call and add results
+        for (const toolCall of toolCalls) {
+          const fnName = toolCall.function.name;
+          let fnArgs;
+          try {
+            fnArgs = typeof toolCall.function.arguments === "string"
+              ? JSON.parse(toolCall.function.arguments)
+              : toolCall.function.arguments;
+          } catch (parseErr) {
+            console.error(`[ToolCall] Failed to parse arguments for ${fnName}:`, parseErr);
+            fnArgs = {};
+          }
+
+          const toolResult = await executeToolCall(fnName, fnArgs, {
+            organizationId: session.organizationId,
+            assistantId: session.assistantId,
+            callSid: session.callSid,
+            transferRules: session.transferRules,
+          });
+
+          const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
+          console.log(`[ToolCall] ${fnName} result: "${resultMessage.slice(0, 100)}..."`);
+
+          // Handle transfer action — send announcement and close
+          if (toolResult.action === "transfer" && toolResult.transferTo) {
+            await sendTTS(session, twilioWs, resultMessage);
+            session.addMessage("assistant", resultMessage);
+            session.endedReason = "transferred";
+            // Deepgram STT is no longer needed after transfer
+            if (session.deepgramWs) {
+              session.deepgramWs.close();
+              session.deepgramWs = null;
+            }
+            return; // Exit — Twilio handles the rest via the REST API update
+          }
+
+          session.messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: resultMessage,
+          });
+        }
+
+        // Continue loop — LLM will process tool results
+        continue;
+      }
+    }
+
+    if (!reply) {
+      reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
+      console.warn(`[Pipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (callSid=${session.callSid})`);
+    }
 
     await sendTTS(session, twilioWs, reply);
     session.addMessage("assistant", reply);
   } catch (err) {
-    const errorSource = err.message?.includes("Groq") ? "llm"
+    const errorSource = err.message?.includes("OpenAI") ? "llm"
       : err.message?.includes("Deepgram TTS") ? "tts"
       : "unknown";
     console.error(`[Pipeline] ${errorSource} error (callSid=${session.callSid}):`, err);
@@ -464,7 +576,9 @@ async function handleUserSpeech(session, twilioWs, transcript) {
  */
 async function sendTTS(session, twilioWs, text) {
   const t0 = Date.now();
-  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, text);
+  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, text, {
+    voice: session?.deepgramVoice,
+  });
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
 
   const chunks = chunkAudioForTwilio(audioBuffer);
@@ -507,8 +621,332 @@ function sendClear(session, twilioWs) {
   console.log("[Barge-in] Cleared Twilio audio buffer");
 }
 
+// --- Test Call WebSocket (/ws/test) ---
+// Browser-to-server voice pipeline for test calls (no Twilio, no cost)
+const testWss = new WebSocketServer({ noServer: true });
+
+// Route WebSocket upgrades by path — ws library doesn't support multiple
+// WebSocketServer instances with { server, path } on the same HTTP server.
+server.on("upgrade", (request, socket, head) => {
+  const { pathname } = new URL(request.url, `http://${request.headers.host}`);
+
+  if (pathname === "/ws/audio") {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
+    });
+  } else if (pathname === "/ws/test") {
+    testWss.handleUpgrade(request, socket, head, (ws) => {
+      testWss.emit("connection", ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+const MAX_TEST_CALL_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Verify a test call token (HMAC-SHA256 signed by TEST_CALL_SECRET).
+ * Token format: base64url(payload).signature
+ */
+function verifyTestCallToken(token) {
+  if (!TEST_CALL_SECRET || !token) return null;
+  try {
+    const [payloadB64, sig] = token.split(".");
+    if (!payloadB64 || !sig) return null;
+
+    const expected = crypto.createHmac("sha256", TEST_CALL_SECRET).update(payloadB64).digest("hex");
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expected);
+    if (sigBuf.length !== expectedBuf.length) return null;
+    if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return null;
+
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+    if (payload.exp && Date.now() > payload.exp) return null;
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+testWss.on("connection", (ws, req) => {
+  if (!TEST_CALL_SECRET) {
+    ws.close(4001, "Test calls not configured");
+    return;
+  }
+
+  // Extract token from query string
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const token = url.searchParams.get("token");
+  const tokenData = verifyTestCallToken(token);
+
+  if (!tokenData || !tokenData.assistantId || !tokenData.organizationId) {
+    ws.close(4003, "Invalid or expired token");
+    return;
+  }
+
+  const { assistantId, organizationId } = tokenData;
+  let session = null;
+  let cleaningUp = false;
+  let autoEndTimer = null;
+
+  async function cleanupTestSession() {
+    if (cleaningUp) return;
+    cleaningUp = true;
+
+    if (autoEndTimer) {
+      clearTimeout(autoEndTimer);
+      autoEndTimer = null;
+    }
+
+    if (session) {
+      session.destroy();
+      session = null;
+    }
+  }
+
+  // Auto-disconnect after max duration
+  autoEndTimer = setTimeout(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "ended", reason: "max-duration" }));
+      ws.close(1000, "Max duration reached");
+    }
+  }, MAX_TEST_CALL_DURATION_MS);
+
+  // Initialize session
+  (async () => {
+    try {
+      const context = await loadTestCallContext(assistantId, organizationId);
+      if (!context) {
+        ws.send(JSON.stringify({ type: "error", message: "Assistant not found or inactive" }));
+        ws.close(4004, "Assistant not found");
+        return;
+      }
+
+      session = new CallSession(`test_${Date.now()}`);
+      session.organizationId = organizationId;
+      session.assistantId = assistantId;
+      session.calendarEnabled = context.calendarEnabled || false;
+      session.transferRules = context.transferRules || [];
+      session.deepgramVoice = getDeepgramVoice(context.assistant.settings?.voiceId);
+
+      // Build system prompt
+      const systemPrompt = buildSystemPrompt(
+        context.assistant,
+        context.organization,
+        context.knowledgeBase,
+        {
+          calendarEnabled: session.calendarEnabled,
+          transferRules: session.transferRules,
+        }
+      );
+      session.setSystemPrompt(systemPrompt);
+
+      // Open Deepgram STT
+      session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+        onTranscript: ({ transcript, isFinal }) => {
+          // Send partial transcripts to browser
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "transcript",
+              role: "user",
+              content: transcript,
+              isFinal,
+            }));
+          }
+          if (!isFinal) return;
+          console.log(`[TestSTT] Final: "${transcript}"`);
+          handleTestUserSpeech(session, ws, transcript);
+        },
+        onError: (err) => {
+          console.error("[TestSTT] Error:", err);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "error", message: "Speech recognition error" }));
+          }
+        },
+        onClose: () => {},
+      });
+
+      // Send greeting
+      const greeting = getGreeting(context.assistant, context.organization.name);
+      try {
+        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, greeting, {
+          voice: session.deepgramVoice,
+        });
+        // Send greeting transcript
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "transcript",
+            role: "assistant",
+            content: greeting,
+            isFinal: true,
+          }));
+          ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+          // Send audio as binary
+          ws.send(audioBuffer);
+          ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+        }
+      } catch (err) {
+        console.error("[TestTTS] Failed to send greeting:", err);
+      }
+      session.addMessage("assistant", greeting);
+
+      // Signal ready
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ready" }));
+      }
+    } catch (err) {
+      console.error("[TestCall] Init error:", err);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "error", message: "Failed to initialize test call" }));
+        ws.close(4500, "Init error");
+      }
+    }
+  })();
+
+  ws.on("message", (data, isBinary) => {
+    if (!session) return;
+
+    if (isBinary) {
+      // Raw mulaw audio from browser — forward to Deepgram
+      if (session.deepgramWs && session.deepgramWs.readyState === WebSocket.OPEN) {
+        session.deepgramWs.send(data);
+      }
+    } else {
+      // JSON control message
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === "stop") {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "ended", reason: "user-ended" }));
+          }
+          ws.close(1000, "User ended call");
+        }
+      } catch {
+        // Ignore invalid JSON
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    cleanupTestSession();
+  });
+
+  ws.on("error", (err) => {
+    console.error("[TestCall] WebSocket error:", err);
+    cleanupTestSession();
+  });
+});
+
+/**
+ * Handle user speech in a test call — same pipeline as production but no transfers,
+ * and sends audio + transcripts back via WebSocket.
+ */
+async function handleTestUserSpeech(session, ws, transcript) {
+  if (!session || session.isProcessing) return;
+  session.isProcessing = true;
+
+  try {
+    session.addMessage("user", transcript);
+
+    const llmOptions = {};
+    const tools = [];
+    if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
+    // No transfers in test calls — skip transferToolDefinition
+    if (tools.length > 0) llmOptions.tools = tools;
+
+    const MAX_TOOL_ITERATIONS = 3;
+    let reply = null;
+
+    for (let i = 0; i <= MAX_TOOL_ITERATIONS; i++) {
+      const t0 = Date.now();
+      const result = await getChatResponse(OPENAI_API_KEY, session.messages, llmOptions);
+
+      if (result.type === "content") {
+        reply = result.content;
+        console.log(`[TestLLM] (${Date.now() - t0}ms) "${reply}"`);
+        break;
+      }
+
+      if (result.type === "tool_calls") {
+        session.messages.push(result.message);
+
+        for (const toolCall of result.toolCalls) {
+          const fnName = toolCall.function.name;
+          let fnArgs;
+          try {
+            fnArgs = typeof toolCall.function.arguments === "string"
+              ? JSON.parse(toolCall.function.arguments)
+              : toolCall.function.arguments;
+          } catch {
+            fnArgs = {};
+          }
+
+          const toolResult = await executeToolCall(fnName, fnArgs, {
+            organizationId: session.organizationId,
+            assistantId: session.assistantId,
+            callSid: session.callSid,
+            transferRules: [],
+            testMode: true,
+          });
+
+          const resultMessage = typeof toolResult === "string" ? toolResult : toolResult.message;
+          session.messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: resultMessage,
+          });
+        }
+        continue;
+      }
+    }
+
+    if (!reply) {
+      reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
+    }
+
+    // Send TTS audio back to browser
+    const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, {
+      voice: session?.deepgramVoice,
+    });
+
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "transcript",
+        role: "assistant",
+        content: reply,
+        isFinal: true,
+      }));
+      ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+      ws.send(audioBuffer);
+      ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+    }
+
+    session.addMessage("assistant", reply);
+  } catch (err) {
+    console.error("[TestPipeline] Error:", err);
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        const fallback = "I'm sorry, I'm having a little trouble right now. Could you repeat that?";
+        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, fallback, {
+          voice: session?.deepgramVoice,
+        });
+        ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: fallback, isFinal: true }));
+        ws.send(audioBuffer);
+      }
+    } catch {
+      // Give up
+    }
+  } finally {
+    session.isProcessing = false;
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
+  if (TEST_CALL_SECRET) {
+    console.log(`Test call WebSocket: ${PUBLIC_URL.replace(/^http/, "ws")}/ws/test`);
+  }
 });

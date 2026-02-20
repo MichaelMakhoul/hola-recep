@@ -40,25 +40,8 @@ import {
 import { getIndustryTemplates, DEFAULT_RECORDING_DISCLOSURE } from "@/lib/templates";
 import { PromptBuilder } from "@/components/prompt-builder";
 import type { PromptConfig } from "@/lib/prompt-builder/types";
-
-// Voice options
-const VOICE_OPTIONS = [
-  { value: "rachel", label: "Rachel (Female)", provider: "11labs" },
-  { value: "drew", label: "Drew (Male)", provider: "11labs" },
-  { value: "clyde", label: "Clyde (Male)", provider: "11labs" },
-  { value: "paul", label: "Paul (Male)", provider: "11labs" },
-  { value: "domi", label: "Domi (Female)", provider: "11labs" },
-  { value: "dave", label: "Dave (Male)", provider: "11labs" },
-  { value: "fin", label: "Fin (Male)", provider: "11labs" },
-  { value: "sarah", label: "Sarah (Female)", provider: "11labs" },
-];
-
-// Model options
-const MODEL_OPTIONS = [
-  { value: "gpt-4o-mini", label: "GPT-4o Mini (Recommended)", provider: "openai" },
-  { value: "gpt-4o", label: "GPT-4o", provider: "openai" },
-  { value: "gpt-4-turbo", label: "GPT-4 Turbo", provider: "openai" },
-];
+import { VoiceSelector } from "@/components/voice-selector";
+import { resolveVoiceId } from "@/lib/voices";
 
 // Industry templates
 const INDUSTRY_TEMPLATES = getIndustryTemplates();
@@ -70,12 +53,9 @@ interface Assistant {
   first_message: string;
   voice_id: string;
   voice_provider: string;
-  model: string;
-  model_provider: string;
   is_active: boolean;
   settings: Record<string, any>;
   prompt_config: Record<string, any> | null;
-  vapi_assistant_id: string | null;
   phone_numbers?: { id: string; phone_number: string }[];
   organization_id?: string;
 }
@@ -110,8 +90,7 @@ export function AssistantBuilder({
   const [name, setName] = useState(assistant.name);
   const [systemPrompt, setSystemPrompt] = useState(assistant.system_prompt);
   const [firstMessage, setFirstMessage] = useState(assistant.first_message);
-  const [voiceId, setVoiceId] = useState(assistant.voice_id);
-  const [model, setModel] = useState(assistant.model);
+  const [voiceId, setVoiceId] = useState(resolveVoiceId(assistant.voice_id));
   const [isActive, setIsActive] = useState(assistant.is_active);
 
   // Settings state
@@ -173,7 +152,6 @@ export function AssistantBuilder({
           systemPrompt,
           firstMessage,
           voiceId,
-          model,
           isActive,
           settings: {
             ...assistant.settings,
@@ -303,16 +281,24 @@ export function AssistantBuilder({
             )}
           </div>
         </div>
-        <Button onClick={handleSave} disabled={isSaving}>
-          {isSaving ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Saving...
-            </>
-          ) : (
-            "Save Changes"
-          )}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Link href={`/assistants/${assistant.id}/test`}>
+            <Button variant="outline">
+              <Phone className="h-4 w-4 mr-2" />
+              Test Call
+            </Button>
+          </Link>
+          <Button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save Changes"
+            )}
+          </Button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -467,42 +453,13 @@ export function AssistantBuilder({
             <CardHeader>
               <CardTitle>Voice Settings</CardTitle>
               <CardDescription>
-                Choose the voice and AI model for your assistant
+                Choose the voice for your assistant
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Voice</Label>
-                  <Select value={voiceId} onValueChange={setVoiceId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a voice" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {VOICE_OPTIONS.map((voice) => (
-                        <SelectItem key={voice.value} value={voice.value}>
-                          {voice.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>AI Model</Label>
-                  <Select value={model} onValueChange={setModel}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {MODEL_OPTIONS.map((m) => (
-                        <SelectItem key={m.value} value={m.value}>
-                          {m.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="space-y-2">
+                <Label>Voice</Label>
+                <VoiceSelector value={voiceId} onChange={setVoiceId} />
               </div>
             </CardContent>
           </Card>
@@ -699,14 +656,6 @@ export function AssistantBuilder({
                 <span className="text-muted-foreground">Assistant ID</span>
                 <code className="bg-muted px-2 py-1 rounded">{assistant.id}</code>
               </div>
-              {assistant.vapi_assistant_id && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Vapi ID</span>
-                  <code className="bg-muted px-2 py-1 rounded">
-                    {assistant.vapi_assistant_id}
-                  </code>
-                </div>
-              )}
             </CardContent>
           </Card>
         </TabsContent>

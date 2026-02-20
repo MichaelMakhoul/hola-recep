@@ -69,6 +69,21 @@ export async function releaseNumber(twilioSid: string): Promise<void> {
   await client.incomingPhoneNumbers(twilioSid).remove();
 }
 
+/**
+ * Configure the voice webhook URL on a Twilio phone number.
+ * Used to point incoming calls at the self-hosted voice server.
+ */
+export async function configureVoiceWebhook(
+  twilioSid: string,
+  webhookUrl: string
+): Promise<void> {
+  const client = getTwilioClient();
+  await client.incomingPhoneNumbers(twilioSid).update({
+    voiceUrl: webhookUrl,
+    voiceMethod: "POST",
+  });
+}
+
 /** Returns Twilio credentials for Vapi import. Kept narrow to avoid broad token exposure. */
 export function getTwilioCredentials(): { accountSid: string; authToken: string } {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
