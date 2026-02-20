@@ -6,7 +6,7 @@ const http = require("http");
 const { WebSocketServer, WebSocket } = require("ws");
 const { CallSession } = require("./call-session");
 const { openDeepgramStream } = require("./services/deepgram-stt");
-const { getChatResponse } = require("./services/openai-llm");
+const { getChatResponse, streamChatResponse } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
 const { loadCallContext, loadTestCallContext } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting } = require("./lib/prompt-builder");
@@ -14,6 +14,8 @@ const { createCallRecord, completeCallRecord, notifyCallCompleted } = require(".
 const { calendarToolDefinitions, transferToolDefinition, executeToolCall } = require("./services/tool-executor");
 const { analyzeCallTranscript } = require("./services/post-call-analysis");
 const { getDeepgramVoice } = require("./lib/voice-mapping");
+const { generateHoldAudio, getHoldPreset } = require("./lib/hold-audio");
+const { detectExpectedInput } = require("./lib/input-type-detector");
 const { getSupabase } = require("./lib/supabase");
 
 // Validate required env vars before deriving any constants
@@ -331,7 +333,8 @@ wss.on("connection", (twilioWs) => {
           session.phoneNumberId = context.phoneNumberId;
           session.calendarEnabled = context.calendarEnabled || false;
           session.transferRules = context.transferRules || [];
-          session.deepgramVoice = getDeepgramVoice(context.assistant.settings?.voiceId);
+          session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
+          session.holdPreset = getHoldPreset(context.organization.industry);
 
           // Build system prompt (guided or legacy)
           const systemPrompt = buildSystemPrompt(
@@ -365,7 +368,13 @@ wss.on("connection", (twilioWs) => {
             onTranscript: ({ transcript, isFinal }) => {
               if (!isFinal) return;
               console.log(`[STT] Final: "${transcript}"`);
-              handleUserSpeech(session, twilioWs, transcript);
+              session.bufferTranscript(transcript, (combined) => {
+                console.log(`[STT] Buffered: "${combined}"`);
+                session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text));
+              });
+            },
+            onUtteranceEnd: () => {
+              session.flushBuffer();
             },
             onError: (err) => {
               console.error("[STT] Error:", err);
@@ -398,6 +407,9 @@ wss.on("connection", (twilioWs) => {
           }
           // Always add greeting to history so LLM context is consistent
           session.addMessage("assistant", greeting);
+          const greetingInputType = detectExpectedInput(greeting);
+          session.setExpectedInputType(greetingInputType);
+          console.log(`[InputDetect] After greeting: ${greetingInputType}`);
           break;
         }
 
@@ -454,11 +466,11 @@ wss.on("connection", (twilioWs) => {
 });
 
 /**
- * Handle final user transcript: get LLM response (with optional tool calling loop),
- * synthesize, and send back.
+ * Handle final user transcript: stream LLM response sentence-by-sentence,
+ * synthesizing and sending TTS for each sentence as it arrives.
  */
 async function handleUserSpeech(session, twilioWs, transcript) {
-  if (!session || session.isProcessing) return;
+  if (!session) return;
   session.isProcessing = true;
 
   // Barge-in: if assistant is speaking, clear Twilio's audio buffer
@@ -466,6 +478,9 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     sendClear(session, twilioWs);
     session.isSpeaking = false;
   }
+
+  // Play hold audio while AI processes
+  const hold = startHoldAudio(session, twilioWs, "twilio");
 
   try {
     session.addMessage("user", transcript);
@@ -482,15 +497,37 @@ async function handleUserSpeech(session, twilioWs, transcript) {
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const t0 = Date.now();
-      const result = await getChatResponse(OPENAI_API_KEY, session.messages, llmOptions);
+
+      // Stream sentence-by-sentence for text responses, accumulate for tool calls
+      const sentenceQueue = [];
+      let ttsChain = Promise.resolve();
+      let holdStopped = false;
+
+      const result = await streamChatResponse(OPENAI_API_KEY, session.messages, {
+        ...llmOptions,
+        onSentence: (sentence) => {
+          sentenceQueue.push(sentence);
+          // Stop hold audio before first TTS sentence
+          if (!holdStopped) {
+            hold.stop();
+            holdStopped = true;
+          }
+          // Chain TTS calls so they play in order
+          ttsChain = ttsChain.then(() => sendTTS(session, twilioWs, sentence)).catch((err) => {
+            console.error("[StreamTTS] Error sending sentence:", err.message);
+          });
+        },
+      });
 
       if (result.type === "content") {
         reply = result.content;
-        console.log(`[LLM] (${Date.now() - t0}ms) "${reply}"`);
+        // Wait for all queued TTS to finish playing
+        await ttsChain;
+        console.log(`[LLM] (${Date.now() - t0}ms) streamed ${sentenceQueue.length} chunks: "${reply}"`);
         break;
       }
 
-      // Tool call response — execute tools and loop
+      // Tool call response — execute tools and loop (no streaming for tool calls)
       if (result.type === "tool_calls") {
         const toolCalls = result.toolCalls;
         console.log(`[LLM] (${Date.now() - t0}ms) Tool calls: ${toolCalls.map((tc) => tc.function.name).join(", ")}`);
@@ -526,12 +563,11 @@ async function handleUserSpeech(session, twilioWs, transcript) {
             await sendTTS(session, twilioWs, resultMessage);
             session.addMessage("assistant", resultMessage);
             session.endedReason = "transferred";
-            // Deepgram STT is no longer needed after transfer
             if (session.deepgramWs) {
               session.deepgramWs.close();
               session.deepgramWs = null;
             }
-            return; // Exit — Twilio handles the rest via the REST API update
+            return;
           }
 
           session.messages.push({
@@ -547,13 +583,22 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     }
 
     if (!reply) {
+      hold.stop();
       reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
       console.warn(`[Pipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (callSid=${session.callSid})`);
+      await sendTTS(session, twilioWs, reply);
     }
 
-    await sendTTS(session, twilioWs, reply);
     session.addMessage("assistant", reply);
+
+    // Detect what input the AI is expecting next and adapt buffering
+    const nextInputType = detectExpectedInput(reply);
+    session.setExpectedInputType(nextInputType);
+    if (nextInputType !== "general") {
+      console.log(`[InputDetect] Next expected: ${nextInputType}`);
+    }
   } catch (err) {
+    hold.stop();
     const errorSource = err.message?.includes("OpenAI") ? "llm"
       : err.message?.includes("Deepgram TTS") ? "tts"
       : "unknown";
@@ -569,6 +614,7 @@ async function handleUserSpeech(session, twilioWs, transcript) {
     }
   } finally {
     session.isProcessing = false;
+    session.drainPending((text) => handleUserSpeech(session, twilioWs, text));
   }
 }
 
@@ -620,6 +666,64 @@ function sendClear(session, twilioWs) {
     })
   );
   console.log("[Barge-in] Cleared Twilio audio buffer");
+}
+
+/**
+ * Start playing subtle hold audio in a loop while the AI processes.
+ * Returns a stop function. Audio is sent as Twilio media events (production)
+ * or raw binary (test calls).
+ *
+ * @param {CallSession} session
+ * @param {WebSocket} ws - Twilio WS or browser WS
+ * @param {"twilio"|"browser"} mode
+ * @returns {{ stop: () => void }}
+ */
+function startHoldAudio(session, ws, mode) {
+  // Generate 2 seconds of hold audio to loop
+  const holdBuf = generateHoldAudio(2000, session.holdPreset || "neutral");
+  if (!holdBuf) return { stop: () => {} }; // silent preset
+
+  let stopped = false;
+  let timer = null;
+
+  function sendLoop() {
+    if (stopped || ws.readyState !== WebSocket.OPEN) return;
+
+    if (mode === "twilio") {
+      const chunks = chunkAudioForTwilio(holdBuf);
+      for (const chunk of chunks) {
+        if (stopped || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({
+          event: "media",
+          streamSid: session.streamSid,
+          media: { payload: chunk },
+        }));
+      }
+    } else {
+      // Browser test call — send raw binary
+      if (!stopped && ws.readyState === WebSocket.OPEN) {
+        ws.send(holdBuf);
+      }
+    }
+
+    // Loop every 2 seconds
+    if (!stopped) {
+      timer = setTimeout(sendLoop, 2000);
+    }
+  }
+
+  sendLoop();
+
+  return {
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      // Clear any queued hold audio from Twilio buffer
+      if (mode === "twilio") {
+        sendClear(session, ws);
+      }
+    },
+  };
 }
 
 // --- Test Call WebSocket (/ws/test) ---
@@ -730,7 +834,8 @@ testWss.on("connection", (ws, req) => {
       session.assistantId = assistantId;
       session.calendarEnabled = context.calendarEnabled || false;
       session.transferRules = context.transferRules || [];
-      session.deepgramVoice = getDeepgramVoice(context.assistant.settings?.voiceId);
+      session.deepgramVoice = getDeepgramVoice(context.assistant.voiceId);
+      session.holdPreset = getHoldPreset(context.organization.industry);
 
       // Build system prompt
       const systemPrompt = buildSystemPrompt(
@@ -758,7 +863,13 @@ testWss.on("connection", (ws, req) => {
           }
           if (!isFinal) return;
           console.log(`[TestSTT] Final: "${transcript}"`);
-          handleTestUserSpeech(session, ws, transcript);
+          session.bufferTranscript(transcript, (combined) => {
+            console.log(`[TestSTT] Buffered: "${combined}"`);
+            session.queueOrProcess(combined, (text) => handleTestUserSpeech(session, ws, text));
+          });
+        },
+        onUtteranceEnd: () => {
+          session.flushBuffer();
         },
         onError: (err) => {
           console.error("[TestSTT] Error:", err);
@@ -796,6 +907,9 @@ testWss.on("connection", (ws, req) => {
         console.error("[TestTTS] Failed to send greeting:", err);
       }
       session.addMessage("assistant", greeting);
+      const testGreetingInputType = detectExpectedInput(greeting);
+      session.setExpectedInputType(testGreetingInputType);
+      console.log(`[TestInputDetect] After greeting: ${testGreetingInputType}`);
 
       // Signal ready
       if (ws.readyState === WebSocket.OPEN) {
@@ -850,12 +964,15 @@ testWss.on("connection", (ws, req) => {
 });
 
 /**
- * Handle user speech in a test call — same pipeline as production but no transfers,
- * and sends audio + transcripts back via WebSocket.
+ * Handle user speech in a test call — streams LLM sentence-by-sentence,
+ * sends TTS audio chunks to browser as each sentence is synthesized.
  */
 async function handleTestUserSpeech(session, ws, transcript) {
-  if (!session || session.isProcessing) return;
+  if (!session) return;
   session.isProcessing = true;
+
+  // Play hold audio while AI processes
+  const hold = startHoldAudio(session, ws, "browser");
 
   try {
     session.addMessage("user", transcript);
@@ -863,7 +980,6 @@ async function handleTestUserSpeech(session, ws, transcript) {
     const llmOptions = {};
     const tools = [];
     if (session.calendarEnabled) tools.push(...calendarToolDefinitions);
-    // No transfers in test calls — skip transferToolDefinition
     if (tools.length > 0) llmOptions.tools = tools;
 
     const MAX_TOOL_ITERATIONS = 3;
@@ -871,15 +987,51 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const t0 = Date.now();
-      const result = await getChatResponse(OPENAI_API_KEY, session.messages, llmOptions);
+      let sentenceCount = 0;
+      let ttsChain = Promise.resolve();
+      let holdStopped = false;
+
+      const result = await streamChatResponse(OPENAI_API_KEY, session.messages, {
+        ...llmOptions,
+        onSentence: (sentence) => {
+          sentenceCount++;
+          if (!holdStopped) {
+            hold.stop();
+            holdStopped = true;
+          }
+          ttsChain = ttsChain.then(async () => {
+            const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, sentence, {
+              voice: session?.deepgramVoice,
+            });
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+              ws.send(audioBuffer);
+            }
+          }).catch((err) => {
+            console.error("[TestStreamTTS] Error sending sentence:", err.message);
+          });
+        },
+      });
 
       if (result.type === "content") {
         reply = result.content;
-        console.log(`[TestLLM] (${Date.now() - t0}ms) "${reply}"`);
+        await ttsChain;
+        // Send final speaking=false and full transcript
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+          ws.send(JSON.stringify({
+            type: "transcript",
+            role: "assistant",
+            content: reply,
+            isFinal: true,
+          }));
+        }
+        console.log(`[TestLLM] (${Date.now() - t0}ms) streamed ${sentenceCount} chunks: "${reply}"`);
         break;
       }
 
       if (result.type === "tool_calls") {
+        console.log(`[TestLLM] (${Date.now() - t0}ms) Tool calls: ${result.toolCalls.map((tc) => tc.function.name).join(", ")}`);
         session.messages.push(result.message);
 
         for (const toolCall of result.toolCalls) {
@@ -914,29 +1066,28 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
 
     if (!reply) {
+      hold.stop();
       reply = "I apologize, I'm having trouble processing that. Could you repeat what you said?";
       console.warn(`[TestPipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (assistantId=${session.assistantId})`);
-    }
-
-    // Send TTS audio back to browser
-    const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, {
-      voice: session?.deepgramVoice,
-    });
-
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: "transcript",
-        role: "assistant",
-        content: reply,
-        isFinal: true,
-      }));
-      ws.send(JSON.stringify({ type: "speaking", speaking: true }));
-      ws.send(audioBuffer);
-      ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+      const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+        ws.send(audioBuffer);
+        ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+        ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: reply, isFinal: true }));
+      }
     }
 
     session.addMessage("assistant", reply);
+
+    // Detect what input the AI is expecting next and adapt buffering
+    const testNextInputType = detectExpectedInput(reply);
+    session.setExpectedInputType(testNextInputType);
+    if (testNextInputType !== "general") {
+      console.log(`[TestInputDetect] Next expected: ${testNextInputType}`);
+    }
   } catch (err) {
+    hold.stop();
     console.error("[TestPipeline] Error:", err);
     try {
       if (ws.readyState === WebSocket.OPEN) {
@@ -952,6 +1103,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
   } finally {
     session.isProcessing = false;
+    session.drainPending((text) => handleTestUserSpeech(session, ws, text));
   }
 }
 

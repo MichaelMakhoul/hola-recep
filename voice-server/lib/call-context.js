@@ -33,7 +33,7 @@ async function loadCallContext(calledNumber) {
   // 2. Load assistant
   const { data: assistant, error: assistantError } = await supabase
     .from("assistants")
-    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active")
+    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active, voice_id")
     .eq("id", phone.assistant_id)
     .single();
 
@@ -158,6 +158,7 @@ async function loadCallContext(calledNumber) {
       systemPrompt: assistant.system_prompt,
       promptConfig: assistant.prompt_config,
       settings: assistant.settings,
+      voiceId: assistant.voice_id,
       firstMessage: assistant.first_message,
     },
     organization: {
@@ -182,7 +183,7 @@ async function loadTestCallContext(assistantId, organizationId) {
   // 1. Load assistant
   const { data: assistant, error: assistantError } = await supabase
     .from("assistants")
-    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active")
+    .select("id, name, system_prompt, prompt_config, settings, first_message, is_active, voice_id")
     .eq("id", assistantId)
     .eq("organization_id", organizationId)
     .single();
@@ -280,6 +281,7 @@ async function loadTestCallContext(assistantId, organizationId) {
       systemPrompt: assistant.system_prompt,
       promptConfig: assistant.prompt_config,
       settings: assistant.settings,
+      voiceId: assistant.voice_id,
       firstMessage: assistant.first_message,
     },
     organization: {

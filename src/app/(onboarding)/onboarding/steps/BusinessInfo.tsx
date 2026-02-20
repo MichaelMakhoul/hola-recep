@@ -2,6 +2,7 @@
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -11,6 +12,20 @@ import {
 } from "@/components/ui/select";
 import { industryOptions } from "@/lib/templates";
 import { SUPPORTED_COUNTRIES, getCountryConfig } from "@/lib/country-config";
+import { Loader2, CheckCircle2, Globe } from "lucide-react";
+
+interface ScrapeResult {
+  businessInfo: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    address?: string;
+    hours?: string[];
+    services?: string[];
+    about?: string;
+  };
+  totalPages: number;
+}
 
 interface BusinessInfoProps {
   data: {
@@ -21,11 +36,16 @@ interface BusinessInfoProps {
     businessWebsite: string;
   };
   onChange: (data: Partial<BusinessInfoProps["data"]>) => void;
+  onScrape?: (url: string) => Promise<void>;
+  isScraping?: boolean;
+  scrapeResult?: ScrapeResult | null;
 }
 
-export function BusinessInfo({ data, onChange }: BusinessInfoProps) {
+export function BusinessInfo({ data, onChange, onScrape, isScraping, scrapeResult }: BusinessInfoProps) {
   const config = data.country ? getCountryConfig(data.country) : null;
   const phonePlaceholder = config?.phone.placeholder || "+1 (555) 123-4567";
+
+  const canImport = data.businessWebsite.trim() !== "" && !isScraping;
 
   return (
     <div className="space-y-6">
@@ -50,6 +70,95 @@ export function BusinessInfo({ data, onChange }: BusinessInfoProps) {
         <p className="text-xs text-muted-foreground">
           This determines your phone number options and timezone defaults
         </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="businessWebsite">Website URL (Optional)</Label>
+        <div className="flex gap-2">
+          <Input
+            id="businessWebsite"
+            type="url"
+            placeholder="https://www.example.com"
+            value={data.businessWebsite}
+            onChange={(e) => onChange({ businessWebsite: e.target.value })}
+            className="flex-1"
+          />
+          {onScrape && (
+            <Button
+              type="button"
+              variant="outline"
+              size="default"
+              disabled={!canImport}
+              onClick={() => onScrape(data.businessWebsite)}
+            >
+              {isScraping ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Scanning...
+                </>
+              ) : (
+                <>
+                  <Globe className="mr-2 h-4 w-4" />
+                  Import
+                </>
+              )}
+            </Button>
+          )}
+        </div>
+        {scrapeResult ? (
+          <div className="space-y-2 rounded-md bg-green-50 px-3 py-3 text-sm text-green-800 dark:bg-green-950/30 dark:text-green-300">
+            <div className="flex items-center gap-2 font-medium">
+              <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+              <span>Website imported — please confirm the details below</span>
+            </div>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 pl-6 text-xs">
+              {scrapeResult.businessInfo.name && (
+                <>
+                  <dt className="font-medium text-green-700 dark:text-green-400">Name</dt>
+                  <dd>{scrapeResult.businessInfo.name}</dd>
+                </>
+              )}
+              {scrapeResult.businessInfo.phone && (
+                <>
+                  <dt className="font-medium text-green-700 dark:text-green-400">Phone</dt>
+                  <dd>{scrapeResult.businessInfo.phone}</dd>
+                </>
+              )}
+              {scrapeResult.businessInfo.email && (
+                <>
+                  <dt className="font-medium text-green-700 dark:text-green-400">Email</dt>
+                  <dd>{scrapeResult.businessInfo.email}</dd>
+                </>
+              )}
+              {scrapeResult.businessInfo.address && (
+                <>
+                  <dt className="font-medium text-green-700 dark:text-green-400">Address</dt>
+                  <dd>{scrapeResult.businessInfo.address}</dd>
+                </>
+              )}
+              {scrapeResult.businessInfo.hours && scrapeResult.businessInfo.hours.length > 0 && (
+                <>
+                  <dt className="font-medium text-green-700 dark:text-green-400">Hours</dt>
+                  <dd>{scrapeResult.businessInfo.hours.join(", ")}</dd>
+                </>
+              )}
+              {scrapeResult.businessInfo.services && scrapeResult.businessInfo.services.length > 0 && (
+                <>
+                  <dt className="font-medium text-green-700 dark:text-green-400">Services</dt>
+                  <dd>{scrapeResult.businessInfo.services.join(", ")}</dd>
+                </>
+              )}
+            </dl>
+            <p className="pl-6 text-xs text-green-600 dark:text-green-400">
+              {scrapeResult.totalPages} page{scrapeResult.totalPages !== 1 ? "s" : ""} scraped.
+              Fields above have been pre-filled — edit them if needed.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            We can import information from your website to train your AI
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -102,20 +211,6 @@ export function BusinessInfo({ data, onChange }: BusinessInfoProps) {
         />
         <p className="text-xs text-muted-foreground">
           Your current business phone (we&apos;ll help forward calls later)
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="businessWebsite">Website URL (Optional)</Label>
-        <Input
-          id="businessWebsite"
-          type="url"
-          placeholder="https://www.example.com"
-          value={data.businessWebsite}
-          onChange={(e) => onChange({ businessWebsite: e.target.value })}
-        />
-        <p className="text-xs text-muted-foreground">
-          We can import information from your website to train your AI
         </p>
       </div>
     </div>

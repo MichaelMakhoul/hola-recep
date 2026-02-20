@@ -5,10 +5,10 @@ const WebSocket = require("ws");
  * Accepts raw mulaw 8kHz audio — no conversion needed from Twilio.
  *
  * @param {string} apiKey
- * @param {{ onTranscript, onError, onClose }} callbacks
+ * @param {{ onTranscript, onUtteranceEnd, onError, onClose }} callbacks
  * @returns {WebSocket}
  */
-function openDeepgramStream(apiKey, { onTranscript, onError, onClose }) {
+function openDeepgramStream(apiKey, { onTranscript, onUtteranceEnd, onError, onClose }) {
   const url =
     "wss://api.deepgram.com/v1/listen?" +
     "encoding=mulaw&sample_rate=8000&channels=1" +
@@ -41,6 +41,11 @@ function openDeepgramStream(apiKey, { onTranscript, onError, onClose }) {
             isFinal: msg.is_final,
           });
         }
+      }
+      // UtteranceEnd fires when Deepgram's VAD detects the user has stopped speaking.
+      // Use this to immediately flush the utterance buffer instead of waiting for debounce.
+      if (msg.type === "UtteranceEnd" && onUtteranceEnd) {
+        onUtteranceEnd();
       }
     } catch (err) {
       onError(err);
