@@ -13,6 +13,7 @@ import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2 } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
+import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/website-scraper";
 
 interface OnboardingData {
   // Step 1: Business Info
@@ -24,8 +25,8 @@ interface OnboardingData {
   // Scraped website content (cached until org creation)
   scrapedKBContent: string;
   scrapedSourceUrl: string;
-  scrapedAddress: string;
-  scrapedCustomInstructions: string;
+  scrapedAddress: string; // Persisted to organizations.business_address
+  scrapedCustomInstructions: string; // Injected into prompt config, not persisted directly
   // Step 2: Assistant Setup
   assistantName: string;
   systemPrompt: string;
@@ -128,10 +129,12 @@ export default function OnboardingPage() {
 
       const result = await res.json();
 
-      // Cache KB content for saving after org creation
+      // Cache KB content for saving after org creation; reset scraped fields
       const updates: Partial<OnboardingData> = {
         scrapedKBContent: result.content,
         scrapedSourceUrl: url,
+        scrapedAddress: "",
+        scrapedCustomInstructions: "",
       };
 
       // Auto-fill fields from scraped data (user clicked Import, so overwrite)
@@ -145,24 +148,13 @@ export default function OnboardingPage() {
         updates.scrapedAddress = result.businessInfo.address;
       }
 
-      // Build custom instructions from scraped services/about/hours
-      const instrParts: string[] = [];
-      if (result.businessInfo?.about) {
-        instrParts.push(`About the business: ${result.businessInfo.about}`);
-      }
-      if (result.businessInfo?.services?.length) {
-        instrParts.push(`Services offered: ${result.businessInfo.services.join(", ")}`);
-      }
-      if (result.businessInfo?.hours?.length) {
-        instrParts.push(`Business hours:\n${result.businessInfo.hours.join("\n")}`);
-      }
-      if (result.businessInfo?.address) {
-        instrParts.push(`Business address: ${result.businessInfo.address}`);
-      }
-      if (instrParts.length > 0) {
-        updates.scrapedCustomInstructions =
-          "Here is information about the business scraped from their website:\n\n" +
-          instrParts.join("\n\n");
+      // Build custom instructions from scraped business info
+      const instructions = buildCustomInstructionsFromBusinessInfo(result.businessInfo || {});
+      if (instructions) {
+        const MAX_CUSTOM_INSTRUCTIONS = 2000;
+        updates.scrapedCustomInstructions = instructions.length > MAX_CUSTOM_INSTRUCTIONS
+          ? instructions.substring(0, MAX_CUSTOM_INSTRUCTIONS)
+          : instructions;
       }
 
       updateData(updates);

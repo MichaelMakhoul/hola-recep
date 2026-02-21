@@ -273,9 +273,34 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
   return null;
 }
 
+function stringField(val: unknown): string | undefined {
+  return typeof val === 'string' ? val : undefined;
+}
+
+function stringArrayField(val: unknown): string[] | undefined {
+  return Array.isArray(val) ? val.filter((item: unknown) => typeof item === 'string') : undefined;
+}
+
+/**
+ * Build custom instructions string from extracted business info.
+ * Returns empty string if no useful fields are present.
+ */
+export function buildCustomInstructionsFromBusinessInfo(
+  info: ScrapedWebsite['businessInfo']
+): string {
+  const parts: string[] = [];
+  if (info.about) parts.push(`About the business: ${info.about}`);
+  if (info.services?.length) parts.push(`Services offered: ${info.services.join(", ")}`);
+  if (info.hours?.length) parts.push(`Business hours:\n${info.hours.join("\n")}`);
+  if (info.address) parts.push(`Business address: ${info.address}`);
+  if (parts.length === 0) return "";
+  return "Here is information about the business scraped from their website:\n\n" + parts.join("\n\n");
+}
+
 /**
  * Extract rich business info from scraped pages using OpenAI GPT-4.1-nano.
- * Falls back to empty object on any failure (non-fatal).
+ * Falls back to empty object on any failure — including malformed LLM JSON
+ * responses — so it is always safe to merge with regex results.
  */
 export async function extractBusinessInfoWithLLM(
   pages: ScrapedPage[]
@@ -341,32 +366,47 @@ Only include fields you are confident about. Return {} if no useful info is foun
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.warn(`[LLM Extract] OpenAI API returned ${response.status}`);
+      const errorBody = await response.text().catch(() => '<unreadable>');
+      console.warn(`[LLM Extract] OpenAI API returned ${response.status}:`, errorBody.substring(0, 500));
       return {};
     }
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content;
-    if (!content) return {};
+    if (!content) {
+      console.warn('[LLM Extract] OpenAI returned empty content', {
+        finishReason: data.choices?.[0]?.finish_reason,
+      });
+      return {};
+    }
 
-    const parsed = JSON.parse(content);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(content);
+    } catch (parseError) {
+      console.warn('[LLM Extract] Failed to parse LLM JSON output:', {
+        error: parseError instanceof Error ? parseError.message : parseError,
+        contentPreview: content.substring(0, 200),
+      });
+      return {};
+    }
 
     // Normalize to expected shape
     return {
-      name: typeof parsed.name === 'string' ? parsed.name : undefined,
-      address: typeof parsed.address === 'string' ? parsed.address : undefined,
-      phone: typeof parsed.phone === 'string' ? parsed.phone : undefined,
-      email: typeof parsed.email === 'string' ? parsed.email : undefined,
-      hours: Array.isArray(parsed.hours) ? parsed.hours.filter((h: unknown) => typeof h === 'string') : undefined,
-      services: Array.isArray(parsed.services) ? parsed.services.filter((s: unknown) => typeof s === 'string') : undefined,
-      about: typeof parsed.about === 'string' ? parsed.about : undefined,
+      name: stringField(parsed.name),
+      address: stringField(parsed.address),
+      phone: stringField(parsed.phone),
+      email: stringField(parsed.email),
+      hours: stringArrayField(parsed.hours),
+      services: stringArrayField(parsed.services),
+      about: stringField(parsed.about),
     };
   } catch (error) {
     clearTimeout(timeoutId);
     if (error instanceof DOMException && error.name === 'AbortError') {
       console.warn('[LLM Extract] OpenAI request timed out (12s)');
     } else {
-      console.warn('[LLM Extract] Failed to extract business info via LLM:', error);
+      console.warn('[LLM Extract] Network or unexpected error:', error);
     }
     return {};
   }

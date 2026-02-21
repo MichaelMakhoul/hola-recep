@@ -61,6 +61,18 @@ export function AssistantSetup({ data, businessInfo, scrapedCustomInstructions, 
     }
   }, [businessInfo.industry, businessInfo.businessName]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Handle late-arriving scraped instructions (user scrapes after visiting step 2)
+  useEffect(() => {
+    if (scrapedCustomInstructions && hasInitializedRef.current && data.promptConfig) {
+      const config = { ...(data.promptConfig as PromptConfig), customInstructions: scrapedCustomInstructions };
+      const generated = buildPromptFromConfig(config, {
+        businessName: businessInfo.businessName || "{business_name}",
+        industry: businessInfo.industry,
+      });
+      onChange({ systemPrompt: generated, promptConfig: config });
+    }
+  }, [scrapedCustomInstructions]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePromptBuilderChange = useCallback(
     (updates: { systemPrompt: string; firstMessage: string; promptConfig: PromptConfig }) => {
       onChange({

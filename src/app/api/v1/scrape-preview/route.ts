@@ -64,10 +64,15 @@ export async function POST(request: NextRequest) {
       maxDepth: 1,
     });
 
-    // LLM extraction for rich business info (non-fatal)
-    const llmInfo = await extractBusinessInfoWithLLM(scrapedData.pages);
+    // LLM extraction for rich business info (non-fatal — must never fail the scrape)
+    let llmInfo: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = {};
+    try {
+      llmInfo = await extractBusinessInfoWithLLM(scrapedData.pages);
+    } catch (err) {
+      console.warn('[scrape-preview] LLM extraction failed, continuing with regex only:', err);
+    }
 
-    // Merge: regex wins for phone/email (more reliable), LLM fills the rest
+    // Prefer regex-extracted values where available (currently phone/email only), fall back to LLM
     const regexInfo = scrapedData.businessInfo;
     const mergedInfo = {
       name: regexInfo.name || llmInfo.name,
@@ -79,7 +84,7 @@ export async function POST(request: NextRequest) {
       about: regexInfo.about || llmInfo.about,
     };
 
-    // Use merged info for KB generation
+    // Mutate scrapedData so generateKnowledgeBase picks up merged info
     scrapedData.businessInfo = mergedInfo;
     const content = generateKnowledgeBase(scrapedData);
 
