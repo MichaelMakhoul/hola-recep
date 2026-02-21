@@ -27,6 +27,8 @@ export interface NotificationPreferences {
   sms_on_failed_call: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
+  sms_textback_on_missed_call: boolean;
+  sms_appointment_confirmation: boolean;
 }
 
 export interface CallNotificationData {
@@ -107,6 +109,8 @@ export async function getNotificationPreferences(
     sms_on_failed_call: data.sms_on_failed_call ?? false,
     sms_phone_number: data.sms_phone_number,
     webhook_url: data.webhook_url,
+    sms_textback_on_missed_call: data.sms_textback_on_missed_call ?? false,
+    sms_appointment_confirmation: data.sms_appointment_confirmation ?? false,
   };
 }
 

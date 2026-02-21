@@ -153,7 +153,7 @@ export async function POST(request: Request) {
 
     if (config.phoneProvider === "twilio") {
       // ── Twilio flow: buy from Twilio, configure voice webhook, silently import into Vapi ──
-      const { searchAvailableNumbers, purchaseNumber, releaseNumber, configureVoiceWebhook, getTwilioCredentials } =
+      const { searchAvailableNumbers, purchaseNumber, releaseNumber, configureVoiceWebhook, configureSmsWebhook, getTwilioCredentials } =
         await import("@/lib/twilio/client");
 
       // 1. Search Twilio for a number matching area code
@@ -181,6 +181,19 @@ export async function POST(request: Request) {
         }
       } else {
         console.warn("[PhoneNumbers] VOICE_SERVER_PUBLIC_URL not set — voice webhook not configured");
+      }
+
+      // 3b. Configure Twilio SMS webhook for opt-out tracking
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+      if (appUrl) {
+        try {
+          await configureSmsWebhook(twilioSid, `${appUrl}/api/webhooks/twilio-sms`);
+        } catch (smsWebhookErr) {
+          console.error(`[PhoneNumbers] Failed to configure SMS webhook for ${phoneNumber}:`, smsWebhookErr);
+          // Non-fatal
+        }
+      } else {
+        console.warn("[PhoneNumbers] NEXT_PUBLIC_APP_URL not set — SMS opt-out webhook not configured");
       }
 
       // 4. Silently import into Vapi as backup (non-fatal)

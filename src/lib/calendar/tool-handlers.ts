@@ -6,6 +6,7 @@ import {
   formatAvailabilityForVoice,
 } from "@/lib/calendar/cal-com";
 import { sendAppointmentNotification } from "@/lib/notifications/notification-service";
+import { sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
 import {
   sanitizeString,
   isValidPhoneNumber,
@@ -996,4 +997,8 @@ function sendNotification(
   }).catch((err) => {
     console.error("Failed to send appointment notification:", err);
   });
+
+  // SMS confirmation to the caller
+  sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone)
+    .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
 }

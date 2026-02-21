@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Mail, MessageSquare, Webhook, Bell } from "lucide-react";
+import { Loader2, Mail, MessageSquare, Webhook, Phone } from "lucide-react";
 
 interface NotificationPreferences {
   email_on_missed_call: boolean;
@@ -19,6 +19,8 @@ interface NotificationPreferences {
   sms_on_voicemail: boolean;
   sms_phone_number: string | null;
   webhook_url: string | null;
+  sms_textback_on_missed_call: boolean;
+  sms_appointment_confirmation: boolean;
 }
 
 interface NotificationSettingsProps {
@@ -41,10 +43,51 @@ export function NotificationSettings({
     sms_on_voicemail: initialPreferences?.sms_on_voicemail ?? false,
     sms_phone_number: initialPreferences?.sms_phone_number ?? "",
     webhook_url: initialPreferences?.webhook_url ?? "",
+    sms_textback_on_missed_call: initialPreferences?.sms_textback_on_missed_call ?? false,
+    sms_appointment_confirmation: initialPreferences?.sms_appointment_confirmation ?? false,
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const { toast } = useToast();
   const supabase = createClient();
+
+  const validate = (): boolean => {
+    const newErrors: Record<string, string> = {};
+
+    if (preferences.sms_phone_number) {
+      const digits = preferences.sms_phone_number.replace(/\D/g, "");
+      if (digits.length < 7 || digits.length > 15) {
+        newErrors.sms_phone_number = "Enter a valid phone number (7-15 digits)";
+      }
+    }
+
+    // Require SMS phone when SMS toggles are on
+    if ((preferences.sms_on_missed_call || preferences.sms_on_voicemail) && !preferences.sms_phone_number) {
+      newErrors.sms_phone_number = "Phone number is required when SMS notifications are enabled";
+    }
+
+    if (preferences.webhook_url) {
+      try {
+        const url = new URL(preferences.webhook_url);
+        if (!["http:", "https:"].includes(url.protocol)) {
+          newErrors.webhook_url = "URL must start with http:// or https://";
+        }
+      } catch {
+        newErrors.webhook_url = "Enter a valid URL (e.g. https://example.com/webhook)";
+      }
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const clearError = (field: string) => {
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
 
   const handleToggle = (key: keyof NotificationPreferences) => {
     setPreferences((prev) => ({
@@ -61,6 +104,7 @@ export function NotificationSettings({
   };
 
   const handleSave = async () => {
+    if (!validate()) return;
     setIsSaving(true);
 
     try {
@@ -196,11 +240,16 @@ export function NotificationSettings({
               type="tel"
               placeholder="(555) 123-4567"
               value={preferences.sms_phone_number || ""}
-              onChange={(e) => handleInputChange("sms_phone_number", e.target.value)}
+              onChange={(e) => { handleInputChange("sms_phone_number", e.target.value); clearError("sms_phone_number"); }}
+              className={errors.sms_phone_number ? "border-destructive" : ""}
             />
-            <p className="text-xs text-muted-foreground">
-              Standard messaging rates may apply
-            </p>
+            {errors.sms_phone_number ? (
+              <p className="text-xs text-destructive">{errors.sms_phone_number}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Standard messaging rates may apply
+              </p>
+            )}
           </div>
 
           <div className="flex items-center justify-between">
@@ -233,6 +282,47 @@ export function NotificationSettings({
         </CardContent>
       </Card>
 
+      {/* Caller SMS — messages sent to callers */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Phone className="h-5 w-5" />
+            Caller SMS
+          </CardTitle>
+          <CardDescription>
+            Automatically text callers from your AI receptionist&apos;s phone number.
+            Callers can reply STOP at any time to opt out.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Missed Call Text-Back</Label>
+              <p className="text-sm text-muted-foreground">
+                Send an SMS to callers when their call is missed, with your booking link and callback number
+              </p>
+            </div>
+            <Switch
+              checked={preferences.sms_textback_on_missed_call}
+              onCheckedChange={() => handleToggle("sms_textback_on_missed_call")}
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Appointment Confirmation</Label>
+              <p className="text-sm text-muted-foreground">
+                Send callers an SMS confirming their appointment after the AI books it
+              </p>
+            </div>
+            <Switch
+              checked={preferences.sms_appointment_confirmation}
+              onCheckedChange={() => handleToggle("sms_appointment_confirmation")}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Webhook Integration */}
       <Card>
         <CardHeader>
@@ -252,11 +342,16 @@ export function NotificationSettings({
               type="url"
               placeholder="https://your-server.com/webhook"
               value={preferences.webhook_url || ""}
-              onChange={(e) => handleInputChange("webhook_url", e.target.value)}
+              onChange={(e) => { handleInputChange("webhook_url", e.target.value); clearError("webhook_url"); }}
+              className={errors.webhook_url ? "border-destructive" : ""}
             />
-            <p className="text-xs text-muted-foreground">
-              We&apos;ll send POST requests with JSON payload for all call events
-            </p>
+            {errors.webhook_url ? (
+              <p className="text-xs text-destructive">{errors.webhook_url}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                We&apos;ll send POST requests with JSON payload for all call events
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>

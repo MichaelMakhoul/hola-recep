@@ -2,7 +2,7 @@ import Twilio from "twilio";
 
 let twilioClient: ReturnType<typeof Twilio> | null = null;
 
-function getTwilioClient() {
+export function getTwilioClient() {
   if (!twilioClient) {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
@@ -81,6 +81,21 @@ export async function configureVoiceWebhook(
   await client.incomingPhoneNumbers(twilioSid).update({
     voiceUrl: webhookUrl,
     voiceMethod: "POST",
+  });
+}
+
+/**
+ * Configure the SMS webhook URL on a Twilio phone number.
+ * Used to receive inbound SMS (e.g., STOP opt-out replies).
+ */
+export async function configureSmsWebhook(
+  twilioSid: string,
+  smsUrl: string
+): Promise<void> {
+  const client = getTwilioClient();
+  await client.incomingPhoneNumbers(twilioSid).update({
+    smsUrl,
+    smsMethod: "POST",
   });
 }
 
