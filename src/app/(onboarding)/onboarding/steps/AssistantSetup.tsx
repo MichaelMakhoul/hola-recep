@@ -22,10 +22,11 @@ interface AssistantSetupProps {
     businessName: string;
     industry: string;
   };
+  scrapedCustomInstructions?: string;
   onChange: (data: Partial<AssistantSetupProps["data"]>) => void;
 }
 
-export function AssistantSetup({ data, businessInfo, onChange }: AssistantSetupProps) {
+export function AssistantSetup({ data, businessInfo, scrapedCustomInstructions, onChange }: AssistantSetupProps) {
   const hasInitializedRef = useRef(false);
   const lastIndustryRef = useRef(businessInfo.industry);
 
@@ -35,6 +36,12 @@ export function AssistantSetup({ data, businessInfo, onChange }: AssistantSetupP
 
     if (businessInfo.industry && (!hasInitializedRef.current || industryChanged)) {
       const defaultConfig = getDefaultConfig(businessInfo.industry);
+
+      // Inject scraped website info into custom instructions
+      if (scrapedCustomInstructions) {
+        defaultConfig.customInstructions = scrapedCustomInstructions;
+      }
+
       const generated = buildPromptFromConfig(defaultConfig, {
         businessName: businessInfo.businessName || "{business_name}",
         industry: businessInfo.industry,
@@ -53,6 +60,18 @@ export function AssistantSetup({ data, businessInfo, onChange }: AssistantSetupP
       lastIndustryRef.current = businessInfo.industry;
     }
   }, [businessInfo.industry, businessInfo.businessName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle late-arriving scraped instructions (user scrapes after visiting step 2)
+  useEffect(() => {
+    if (scrapedCustomInstructions && hasInitializedRef.current && data.promptConfig) {
+      const config = { ...(data.promptConfig as PromptConfig), customInstructions: scrapedCustomInstructions };
+      const generated = buildPromptFromConfig(config, {
+        businessName: businessInfo.businessName || "{business_name}",
+        industry: businessInfo.industry,
+      });
+      onChange({ systemPrompt: generated, promptConfig: config });
+    }
+  }, [scrapedCustomInstructions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePromptBuilderChange = useCallback(
     (updates: { systemPrompt: string; firstMessage: string; promptConfig: PromptConfig }) => {

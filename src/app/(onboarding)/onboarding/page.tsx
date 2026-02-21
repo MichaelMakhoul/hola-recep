@@ -13,6 +13,7 @@ import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2 } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
+import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
 
 interface OnboardingData {
   // Step 1: Business Info
@@ -24,6 +25,8 @@ interface OnboardingData {
   // Scraped website content (cached until org creation)
   scrapedKBContent: string;
   scrapedSourceUrl: string;
+  scrapedAddress: string; // Persisted to organizations.business_address
+  scrapedCustomInstructions: string; // Injected into prompt config, not persisted directly
   // Step 2: Assistant Setup
   assistantName: string;
   systemPrompt: string;
@@ -48,6 +51,8 @@ const initialData: OnboardingData = {
   businessWebsite: "",
   scrapedKBContent: "",
   scrapedSourceUrl: "",
+  scrapedAddress: "",
+  scrapedCustomInstructions: "",
   assistantName: "",
   systemPrompt: "",
   firstMessage: "",
@@ -124,10 +129,12 @@ export default function OnboardingPage() {
 
       const result = await res.json();
 
-      // Cache KB content for saving after org creation
+      // Cache KB content for saving after org creation; reset scraped fields
       const updates: Partial<OnboardingData> = {
         scrapedKBContent: result.content,
         scrapedSourceUrl: url,
+        scrapedAddress: "",
+        scrapedCustomInstructions: "",
       };
 
       // Auto-fill fields from scraped data (user clicked Import, so overwrite)
@@ -136,6 +143,18 @@ export default function OnboardingPage() {
       }
       if (result.businessInfo?.phone) {
         updates.businessPhone = result.businessInfo.phone;
+      }
+      if (result.businessInfo?.address) {
+        updates.scrapedAddress = result.businessInfo.address;
+      }
+
+      // Build custom instructions from scraped business info
+      const instructions = buildCustomInstructionsFromBusinessInfo(result.businessInfo || {});
+      if (instructions) {
+        const MAX_CUSTOM_INSTRUCTIONS = 2000;
+        updates.scrapedCustomInstructions = instructions.length > MAX_CUSTOM_INSTRUCTIONS
+          ? instructions.substring(0, MAX_CUSTOM_INSTRUCTIONS)
+          : instructions;
       }
 
       updateData(updates);
@@ -215,6 +234,7 @@ export default function OnboardingPage() {
             industry: data.industry,
             business_phone: data.businessPhone || null,
             business_website: data.businessWebsite || null,
+            business_address: data.scrapedAddress || null,
             country: data.country || "US",
             timezone: countryConfig?.defaultTimezone || "America/New_York",
           })
@@ -470,6 +490,7 @@ export default function OnboardingPage() {
                     businessName: data.businessName,
                     industry: data.industry,
                   }}
+                  scrapedCustomInstructions={data.scrapedCustomInstructions}
                   onChange={(updates) => updateData(updates)}
                 />
               )}

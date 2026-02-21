@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { scrapeWebsite, generateKnowledgeBase } from "@/lib/scraper/website-scraper";
+import { scrapeWebsite, generateKnowledgeBase, extractBusinessInfoWithLLM } from "@/lib/scraper/website-scraper";
 import { isUrlAllowedAsync } from "@/lib/security/validation";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 
@@ -64,10 +64,32 @@ export async function POST(request: NextRequest) {
       maxDepth: 1,
     });
 
+    // LLM extraction for rich business info (non-fatal — must never fail the scrape)
+    let llmInfo: Awaited<ReturnType<typeof extractBusinessInfoWithLLM>> = {};
+    try {
+      llmInfo = await extractBusinessInfoWithLLM(scrapedData.pages);
+    } catch (err) {
+      console.warn('[scrape-preview] LLM extraction failed, continuing with regex only:', err);
+    }
+
+    // Prefer regex-extracted values where available (currently phone/email only), fall back to LLM
+    const regexInfo = scrapedData.businessInfo;
+    const mergedInfo = {
+      name: regexInfo.name || llmInfo.name,
+      phone: regexInfo.phone || llmInfo.phone,
+      email: regexInfo.email || llmInfo.email,
+      address: regexInfo.address || llmInfo.address,
+      hours: regexInfo.hours?.length ? regexInfo.hours : llmInfo.hours,
+      services: regexInfo.services?.length ? regexInfo.services : llmInfo.services,
+      about: regexInfo.about || llmInfo.about,
+    };
+
+    // Mutate scrapedData so generateKnowledgeBase picks up merged info
+    scrapedData.businessInfo = mergedInfo;
     const content = generateKnowledgeBase(scrapedData);
 
     return NextResponse.json({
-      businessInfo: scrapedData.businessInfo,
+      businessInfo: mergedInfo,
       content,
       totalPages: scrapedData.totalPages,
     });
