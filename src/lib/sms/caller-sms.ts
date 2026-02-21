@@ -5,7 +5,8 @@
  * - Missed-call text-back with booking link + callback number
  * - Appointment confirmation after AI books
  *
- * Guards: feature toggle, opt-out check, rate limiting, spam protection.
+ * Guards: feature toggle, opt-out check, rate limiting.
+ * Spam protection applies to missed-call text-back only (caller provides isSpam).
  * Sends from the org's Twilio number (caller recognizes it).
  */
 
@@ -64,8 +65,8 @@ async function isRateLimited(
 ): Promise<boolean> {
   const supabase = createAdminClient();
 
-  // missed_call_textback: max 1 per 24h
-  // appointment_confirmation: max 1 per 1h
+  // missed_call_textback: max 1 per caller per org per 24h
+  // appointment_confirmation: max 1 per caller per org per 1h
   const windowHours = messageType === "missed_call_textback" ? 24 : 1;
   const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
 
