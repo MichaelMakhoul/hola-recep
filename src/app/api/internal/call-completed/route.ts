@@ -245,9 +245,9 @@ export async function POST(request: Request) {
     }
 
     // 4b. Send text-back SMS to caller for missed/failed calls only
-    if ((status === "failed" || durationSeconds < 10) && callerPhone && callerPhone !== "Unknown") {
+    if ((status === "failed" || durationSeconds < 10) && !spamAnalysisFailed && callerPhone && callerPhone !== "Unknown") {
       sendMissedCallTextBack(organizationId, callerPhone, spamAnalysis?.isSpam)
-        .catch((err) => console.warn("[Internal] Caller text-back failed:", err.message));
+        .catch((err) => console.error("[Internal] Caller text-back failed:", { callId, organizationId, error: err }));
     }
   }
 

@@ -32,8 +32,7 @@ async function resolveOrgTwilioNumber(
     .select("phone_number")
     .eq("organization_id", orgId)
     .eq("is_active", true)
-    .limit(1)
-    .single();
+    .maybeSingle();
 
   if (error || !data) return null;
   return data.phone_number;
@@ -44,13 +43,17 @@ async function isCallerOptedOut(
   orgId: string
 ): Promise<boolean> {
   const supabase = createAdminClient();
-  const { data } = await (supabase as any)
+  const { data, error } = await (supabase as any)
     .from("caller_sms_optouts")
     .select("id")
     .eq("phone_number", phone)
     .eq("organization_id", orgId)
     .maybeSingle();
 
+  if (error) {
+    console.error("[CallerSMS] Opt-out check failed — blocking send to be safe:", { phone, orgId, error });
+    return true; // Fail closed: treat as opted out
+  }
   return !!data;
 }
 
@@ -66,7 +69,7 @@ async function isRateLimited(
   const windowHours = messageType === "missed_call_textback" ? 24 : 1;
   const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
 
-  const { count } = await (supabase as any)
+  const { count, error } = await (supabase as any)
     .from("caller_sms_log")
     .select("id", { count: "exact", head: true })
     .eq("caller_phone", phone)
@@ -75,6 +78,10 @@ async function isRateLimited(
     .eq("status", "sent")
     .gte("created_at", since);
 
+  if (error) {
+    console.error("[CallerSMS] Rate limit check failed — blocking send to be safe:", { phone, messageType, orgId, error });
+    return true; // Fail closed: treat as rate limited
+  }
   return (count ?? 0) > 0;
 }
 
@@ -89,7 +96,7 @@ async function logSMSSend(params: {
   errorMessage?: string;
 }): Promise<void> {
   const supabase = createAdminClient();
-  await (supabase as any).from("caller_sms_log").insert({
+  const { error } = await (supabase as any).from("caller_sms_log").insert({
     organization_id: params.orgId,
     caller_phone: params.callerPhone,
     from_number: params.fromNumber,
@@ -99,6 +106,11 @@ async function logSMSSend(params: {
     status: params.status,
     error_message: params.errorMessage || null,
   });
+  if (error) {
+    console.error("[CallerSMS] Failed to log SMS send — rate limiting may be affected:", {
+      messageType: params.messageType, callerPhone: params.callerPhone, error,
+    });
+  }
 }
 
 async function sendViaTwilio(
@@ -145,9 +157,14 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_spam", reason: "caller_is_spam" };
   }
 
-  // 3. Opt-out check
+  // 3. Resolve org's Twilio number (once, reused for logging + sending)
+  const fromNumber = await resolveOrgTwilioNumber(orgId);
+  if (!fromNumber) {
+    return { sent: false, status: "failed", reason: "no_org_phone_number" };
+  }
+
+  // 4. Opt-out check
   if (await isCallerOptedOut(callerPhone, orgId)) {
-    const fromNumber = (await resolveOrgTwilioNumber(orgId)) || "unknown";
     await logSMSSend({
       orgId,
       callerPhone,
@@ -159,9 +176,8 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_optout", reason: "caller_opted_out" };
   }
 
-  // 4. Rate limit check
+  // 5. Rate limit check
   if (await isRateLimited(callerPhone, messageType, orgId)) {
-    const fromNumber = (await resolveOrgTwilioNumber(orgId)) || "unknown";
     await logSMSSend({
       orgId,
       callerPhone,
@@ -171,12 +187,6 @@ async function sendCallerSMS(params: {
       status: "blocked_ratelimit",
     });
     return { sent: false, status: "blocked_ratelimit", reason: "rate_limited" };
-  }
-
-  // 5. Resolve org's Twilio number
-  const fromNumber = await resolveOrgTwilioNumber(orgId);
-  if (!fromNumber) {
-    return { sent: false, status: "failed", reason: "no_org_phone_number" };
   }
 
   // 6. Send via Twilio
@@ -266,14 +276,14 @@ export async function sendAppointmentConfirmationSMS(
 
   const { data: org } = await (supabase as any)
     .from("organizations")
-    .select("business_name, business_phone")
+    .select("business_name, business_phone, timezone")
     .eq("id", orgId)
     .single();
 
   const businessName = org?.business_name || "our office";
   const businessPhone = org?.business_phone || "";
 
-  const tz = timezone || "America/New_York";
+  const tz = timezone || org?.timezone || "America/New_York";
   const dateStr = startTime.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
@@ -291,6 +301,7 @@ export async function sendAppointmentConfirmationSMS(
   if (businessPhone) {
     message += ` To reschedule, call ${businessPhone}.`;
   }
+  message += "\n\nReply STOP to opt-out.";
 
   return sendCallerSMS({
     orgId,

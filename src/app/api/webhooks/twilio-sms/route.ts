@@ -14,9 +14,9 @@ export async function POST(request: Request) {
   // 1. Validate Twilio signature
   const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
   if (!twilioAuthToken) {
-    console.error("[TwilioSMS] TWILIO_AUTH_TOKEN not configured");
+    console.error("[TwilioSMS] TWILIO_AUTH_TOKEN not configured — cannot validate inbound SMS");
     return new Response("<Response></Response>", {
-      status: 200,
+      status: 500,
       headers: { "Content-Type": "text/xml" },
     });
   }
@@ -88,11 +88,14 @@ export async function POST(request: Request) {
     );
 
   if (error) {
-    console.error("[TwilioSMS] Failed to record opt-out:", error);
-  } else {
-    console.log("[TwilioSMS] Recorded opt-out:", { from, orgId: phoneRecord.organization_id });
+    console.error("[TwilioSMS] Failed to record opt-out — Twilio will retry:", { from, orgId: phoneRecord.organization_id, error });
+    return new Response("<Response></Response>", {
+      status: 500,
+      headers: { "Content-Type": "text/xml" },
+    });
   }
 
+  console.log("[TwilioSMS] Recorded opt-out:", { from, orgId: phoneRecord.organization_id });
   return new Response("<Response></Response>", {
     status: 200,
     headers: { "Content-Type": "text/xml" },

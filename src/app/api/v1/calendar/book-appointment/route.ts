@@ -203,8 +203,8 @@ export async function POST(request: NextRequest) {
     });
 
     // SMS confirmation to the caller
-    sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate)
-      .catch((err) => console.warn("Appointment confirmation SMS failed:", err.message));
+    sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, integration.settings?.timezone)
+      .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
 
     // Format confirmation message for voice
     const voiceResponse = formatBookingConfirmation(booking);
