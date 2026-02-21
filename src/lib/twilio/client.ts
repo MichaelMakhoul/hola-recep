@@ -2,7 +2,7 @@ import Twilio from "twilio";
 
 let twilioClient: ReturnType<typeof Twilio> | null = null;
 
-function getTwilioClient() {
+export function getTwilioClient() {
   if (!twilioClient) {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;

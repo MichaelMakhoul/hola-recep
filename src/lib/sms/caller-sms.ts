@@ -12,13 +12,15 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getNotificationPreferences } from "@/lib/notifications/notification-service";
-import Twilio from "twilio";
+import { getTwilioClient } from "@/lib/twilio/client";
 
 type MessageType = "missed_call_textback" | "appointment_confirmation";
 
+type SMSStatus = "sent" | "skipped" | "blocked_spam" | "blocked_optout" | "blocked_ratelimit" | "failed";
+
 interface SMSSendResult {
   sent: boolean;
-  status: string;
+  status: SMSStatus;
   reason?: string;
 }
 
@@ -93,7 +95,7 @@ async function logSMSSend(params: {
   messageType: MessageType;
   messageBody: string;
   twilioMessageSid?: string;
-  status: string;
+  status: SMSStatus;
   errorMessage?: string;
 }): Promise<void> {
   const supabase = createAdminClient();
@@ -119,14 +121,7 @@ async function sendViaTwilio(
   from: string,
   body: string
 ): Promise<string> {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-
-  if (!accountSid || !authToken) {
-    throw new Error("Twilio credentials not configured");
-  }
-
-  const client = Twilio(accountSid, authToken);
+  const client = getTwilioClient();
   const message = await client.messages.create({ body, to, from });
   return message.sid;
 }

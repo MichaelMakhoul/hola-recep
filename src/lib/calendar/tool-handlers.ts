@@ -1000,5 +1000,5 @@ function sendNotification(
 
   // SMS confirmation to the caller
   sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate, timezone)
-    .catch((err) => console.warn("Appointment confirmation SMS failed:", err.message));
+    .catch((err) => console.error("Appointment confirmation SMS failed:", { organizationId, error: err }));
 }
