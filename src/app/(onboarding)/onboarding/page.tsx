@@ -13,7 +13,7 @@ import { TestCall } from "./steps/TestCall";
 import { GoLive } from "./steps/GoLive";
 import { ArrowLeft, ArrowRight, Loader2, CheckCircle2 } from "lucide-react";
 import { getCountryConfig } from "@/lib/country-config";
-import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/website-scraper";
+import { buildCustomInstructionsFromBusinessInfo } from "@/lib/scraper/build-custom-instructions";
 
 interface OnboardingData {
   // Step 1: Business Info

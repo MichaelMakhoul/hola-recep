@@ -1,9 +1,6 @@
 import { describe, it, expect } from "vitest";
-import {
-  stringField,
-  stringArrayField,
-  buildCustomInstructionsFromBusinessInfo,
-} from "../website-scraper";
+import { stringField, stringArrayField } from "../website-scraper";
+import { buildCustomInstructionsFromBusinessInfo } from "../build-custom-instructions";
 
 describe("stringField", () => {
   it("returns the string when given a string", () => {

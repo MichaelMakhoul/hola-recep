@@ -281,21 +281,8 @@ export function stringArrayField(val: unknown): string[] | undefined {
   return Array.isArray(val) ? val.filter((item: unknown) => typeof item === 'string') : undefined;
 }
 
-/**
- * Build custom instructions string from extracted business info.
- * Returns empty string if no useful fields are present.
- */
-export function buildCustomInstructionsFromBusinessInfo(
-  info: ScrapedWebsite['businessInfo']
-): string {
-  const parts: string[] = [];
-  if (info.about) parts.push(`About the business: ${info.about}`);
-  if (info.services?.length) parts.push(`Services offered: ${info.services.join(", ")}`);
-  if (info.hours?.length) parts.push(`Business hours:\n${info.hours.join("\n")}`);
-  if (info.address) parts.push(`Business address: ${info.address}`);
-  if (parts.length === 0) return "";
-  return "Here is information about the business scraped from their website:\n\n" + parts.join("\n\n");
-}
+// Re-export for server-side consumers (API routes, etc.)
+export { buildCustomInstructionsFromBusinessInfo } from "./build-custom-instructions";
 
 /**
  * Extract rich business info from scraped pages using OpenAI GPT-4.1-nano.
