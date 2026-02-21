@@ -6,6 +6,7 @@ import {
   formatBookingConfirmation,
 } from "@/lib/calendar/cal-com";
 import { sendAppointmentNotification } from "@/lib/notifications/notification-service";
+import { sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
 import {
   verifyWebhookSecret,
   isValidUUID,
@@ -200,6 +201,10 @@ export async function POST(request: NextRequest) {
     }).catch((err) => {
       console.error("Failed to send appointment notification:", err);
     });
+
+    // SMS confirmation to the caller
+    sendAppointmentConfirmationSMS(organizationId, phone, appointmentDate)
+      .catch((err) => console.warn("Appointment confirmation SMS failed:", err.message));
 
     // Format confirmation message for voice
     const voiceResponse = formatBookingConfirmation(booking);

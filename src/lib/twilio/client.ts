@@ -84,6 +84,21 @@ export async function configureVoiceWebhook(
   });
 }
 
+/**
+ * Configure the SMS webhook URL on a Twilio phone number.
+ * Used to receive inbound SMS (e.g., STOP opt-out replies).
+ */
+export async function configureSmsWebhook(
+  twilioSid: string,
+  smsUrl: string
+): Promise<void> {
+  const client = getTwilioClient();
+  await client.incomingPhoneNumbers(twilioSid).update({
+    smsUrl,
+    smsMethod: "POST",
+  });
+}
+
 /** Returns Twilio credentials for Vapi import. Kept narrow to avoid broad token exposure. */
 export function getTwilioCredentials(): { accountSid: string; authToken: string } {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;

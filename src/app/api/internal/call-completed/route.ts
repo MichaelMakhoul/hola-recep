@@ -6,6 +6,7 @@ import {
   sendMissedCallNotification,
   sendFailedCallNotification,
 } from "@/lib/notifications/notification-service";
+import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { withRateLimit } from "@/lib/security/rate-limiter";
 
@@ -241,6 +242,12 @@ export async function POST(request: Request) {
 
     if (spamAnalysisFailed && notificationStatus === "sent") {
       console.warn("[Internal] Notification sent despite spam analysis failure — may be for a spam call:", { callId });
+    }
+
+    // 4b. Send text-back SMS to caller for missed/failed calls only
+    if ((status === "failed" || durationSeconds < 10) && callerPhone && callerPhone !== "Unknown") {
+      sendMissedCallTextBack(organizationId, callerPhone, spamAnalysis?.isSpam)
+        .catch((err) => console.warn("[Internal] Caller text-back failed:", err.message));
     }
   }
 

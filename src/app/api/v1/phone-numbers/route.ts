@@ -183,6 +183,18 @@ export async function POST(request: Request) {
         console.warn("[PhoneNumbers] VOICE_SERVER_PUBLIC_URL not set — voice webhook not configured");
       }
 
+      // 3b. Configure Twilio SMS webhook for opt-out tracking
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+      if (appUrl) {
+        try {
+          const { configureSmsWebhook } = await import("@/lib/twilio/client");
+          await configureSmsWebhook(twilioSid, `${appUrl}/api/webhooks/twilio-sms`);
+        } catch (smsWebhookErr) {
+          console.error(`[PhoneNumbers] Failed to configure SMS webhook for ${phoneNumber}:`, smsWebhookErr);
+          // Non-fatal
+        }
+      }
+
       // 4. Silently import into Vapi as backup (non-fatal)
       try {
         const twilioCreds = getTwilioCredentials();

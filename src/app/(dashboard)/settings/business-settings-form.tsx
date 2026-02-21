@@ -28,15 +28,7 @@ import {
   getCountryConfig,
   getTimezonesForCountry,
 } from "@/lib/country-config";
-
-const INDUSTRIES = [
-  { value: "dental", label: "Dental Practice" },
-  { value: "legal", label: "Law Firm" },
-  { value: "home_services", label: "Home Services" },
-  { value: "medical", label: "Medical Practice" },
-  { value: "real_estate", label: "Real Estate" },
-  { value: "other", label: "Other" },
-];
+import { industryOptions } from "@/lib/templates";
 
 const DAYS = [
   { key: "monday", label: "Monday" },
@@ -103,11 +95,50 @@ export function BusinessSettingsForm({
       sunday: null,
     }
   );
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const { toast } = useToast();
   const supabase = createClient();
 
   const config = getCountryConfig(country);
   const timezones = getTimezonesForCountry(country);
+
+  const validate = (): boolean => {
+    const newErrors: Record<string, string> = {};
+
+    if (!businessName.trim()) {
+      newErrors.businessName = "Business name is required";
+    }
+
+    if (phone.trim()) {
+      // Allow digits, spaces, dashes, parens, plus sign — min 7 digits
+      const digits = phone.replace(/\D/g, "");
+      if (digits.length < 7 || digits.length > 15) {
+        newErrors.phone = "Enter a valid phone number (7-15 digits)";
+      }
+    }
+
+    if (websiteUrl.trim()) {
+      try {
+        const url = new URL(websiteUrl);
+        if (!["http:", "https:"].includes(url.protocol)) {
+          newErrors.websiteUrl = "URL must start with http:// or https://";
+        }
+      } catch {
+        newErrors.websiteUrl = "Enter a valid URL (e.g. https://example.com)";
+      }
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const clearError = (field: string) => {
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
 
   const handleCountryChange = (newCountry: string) => {
     setCountry(newCountry);
@@ -120,6 +151,7 @@ export function BusinessSettingsForm({
   };
 
   const handleSave = async () => {
+    if (!validate()) return;
     setIsLoading(true);
     try {
       const { error } = await (supabase as any)
@@ -217,9 +249,13 @@ export function BusinessSettingsForm({
             <Input
               id="businessName"
               value={businessName}
-              onChange={(e) => setBusinessName(e.target.value)}
+              onChange={(e) => { setBusinessName(e.target.value); clearError("businessName"); }}
               placeholder="Acme Dental"
+              className={errors.businessName ? "border-destructive" : ""}
             />
+            {errors.businessName && (
+              <p className="text-xs text-destructive">{errors.businessName}</p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="industry">Industry</Label>
@@ -228,7 +264,7 @@ export function BusinessSettingsForm({
                 <SelectValue placeholder="Select your industry" />
               </SelectTrigger>
               <SelectContent>
-                {INDUSTRIES.map((ind) => (
+                {industryOptions.map((ind) => (
                   <SelectItem key={ind.value} value={ind.value}>
                     {ind.label}
                   </SelectItem>
@@ -245,12 +281,17 @@ export function BusinessSettingsForm({
               id="websiteUrl"
               type="url"
               value={websiteUrl}
-              onChange={(e) => setWebsiteUrl(e.target.value)}
+              onChange={(e) => { setWebsiteUrl(e.target.value); clearError("websiteUrl"); }}
               placeholder="https://acmedental.com"
+              className={errors.websiteUrl ? "border-destructive" : ""}
             />
-            <p className="text-xs text-muted-foreground">
-              We can import information from your website to train your AI
-            </p>
+            {errors.websiteUrl ? (
+              <p className="text-xs text-destructive">{errors.websiteUrl}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                We can import information from your website to train your AI
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label htmlFor="phone">Business Phone</Label>
@@ -258,9 +299,13 @@ export function BusinessSettingsForm({
               id="phone"
               type="tel"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              onChange={(e) => { setPhone(e.target.value); clearError("phone"); }}
               placeholder={config.phone.placeholder}
+              className={errors.phone ? "border-destructive" : ""}
             />
+            {errors.phone && (
+              <p className="text-xs text-destructive">{errors.phone}</p>
+            )}
           </div>
         </div>
 
