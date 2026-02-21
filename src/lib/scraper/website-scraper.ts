@@ -273,11 +273,11 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
   return null;
 }
 
-function stringField(val: unknown): string | undefined {
+export function stringField(val: unknown): string | undefined {
   return typeof val === 'string' ? val : undefined;
 }
 
-function stringArrayField(val: unknown): string[] | undefined {
+export function stringArrayField(val: unknown): string[] | undefined {
   return Array.isArray(val) ? val.filter((item: unknown) => typeof item === 'string') : undefined;
 }
 
