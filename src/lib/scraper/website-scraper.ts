@@ -274,6 +274,105 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
 }
 
 /**
+ * Extract rich business info from scraped pages using OpenAI GPT-4.1-nano.
+ * Falls back to empty object on any failure (non-fatal).
+ */
+export async function extractBusinessInfoWithLLM(
+  pages: ScrapedPage[]
+): Promise<ScrapedWebsite['businessInfo']> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.warn('[LLM Extract] OPENAI_API_KEY not set, skipping LLM extraction');
+    return {};
+  }
+
+  if (pages.length === 0) return {};
+
+  // Concatenate page text, truncated to ~8K chars
+  const MAX_CHARS = 8000;
+  let text = '';
+  for (const page of pages) {
+    const pageText = `--- ${page.title || page.url} ---\n${page.content}\n\n`;
+    if (text.length + pageText.length > MAX_CHARS) {
+      text += pageText.substring(0, MAX_CHARS - text.length);
+      break;
+    }
+    text += pageText;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4.1-nano',
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: `You are a business information extractor. Given website text, extract structured business details. Return a JSON object with these fields (all optional, omit if not found):
+- "name": string — the business name
+- "address": string — full street address
+- "phone": string — primary phone number
+- "email": string — primary email address
+- "hours": string[] — business hours, e.g. ["Monday: 9am-5pm", "Tuesday: 9am-5pm"]
+- "services": string[] — list of services offered (keep each concise, max 8 words)
+- "about": string — 1-2 sentence summary of what the business does
+
+Only include fields you are confident about. Return {} if no useful info is found.`,
+          },
+          {
+            role: 'user',
+            content: text,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 1000,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn(`[LLM Extract] OpenAI API returned ${response.status}`);
+      return {};
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) return {};
+
+    const parsed = JSON.parse(content);
+
+    // Normalize to expected shape
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name : undefined,
+      address: typeof parsed.address === 'string' ? parsed.address : undefined,
+      phone: typeof parsed.phone === 'string' ? parsed.phone : undefined,
+      email: typeof parsed.email === 'string' ? parsed.email : undefined,
+      hours: Array.isArray(parsed.hours) ? parsed.hours.filter((h: unknown) => typeof h === 'string') : undefined,
+      services: Array.isArray(parsed.services) ? parsed.services.filter((s: unknown) => typeof s === 'string') : undefined,
+      about: typeof parsed.about === 'string' ? parsed.about : undefined,
+    };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      console.warn('[LLM Extract] OpenAI request timed out (12s)');
+    } else {
+      console.warn('[LLM Extract] Failed to extract business info via LLM:', error);
+    }
+    return {};
+  }
+}
+
+/**
  * Main scrape function
  */
 export async function scrapeWebsite(

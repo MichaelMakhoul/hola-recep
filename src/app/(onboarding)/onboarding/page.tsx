@@ -24,6 +24,8 @@ interface OnboardingData {
   // Scraped website content (cached until org creation)
   scrapedKBContent: string;
   scrapedSourceUrl: string;
+  scrapedAddress: string;
+  scrapedCustomInstructions: string;
   // Step 2: Assistant Setup
   assistantName: string;
   systemPrompt: string;
@@ -48,6 +50,8 @@ const initialData: OnboardingData = {
   businessWebsite: "",
   scrapedKBContent: "",
   scrapedSourceUrl: "",
+  scrapedAddress: "",
+  scrapedCustomInstructions: "",
   assistantName: "",
   systemPrompt: "",
   firstMessage: "",
@@ -137,6 +141,29 @@ export default function OnboardingPage() {
       if (result.businessInfo?.phone) {
         updates.businessPhone = result.businessInfo.phone;
       }
+      if (result.businessInfo?.address) {
+        updates.scrapedAddress = result.businessInfo.address;
+      }
+
+      // Build custom instructions from scraped services/about/hours
+      const instrParts: string[] = [];
+      if (result.businessInfo?.about) {
+        instrParts.push(`About the business: ${result.businessInfo.about}`);
+      }
+      if (result.businessInfo?.services?.length) {
+        instrParts.push(`Services offered: ${result.businessInfo.services.join(", ")}`);
+      }
+      if (result.businessInfo?.hours?.length) {
+        instrParts.push(`Business hours:\n${result.businessInfo.hours.join("\n")}`);
+      }
+      if (result.businessInfo?.address) {
+        instrParts.push(`Business address: ${result.businessInfo.address}`);
+      }
+      if (instrParts.length > 0) {
+        updates.scrapedCustomInstructions =
+          "Here is information about the business scraped from their website:\n\n" +
+          instrParts.join("\n\n");
+      }
 
       updateData(updates);
       setScrapeResult({
@@ -215,6 +242,7 @@ export default function OnboardingPage() {
             industry: data.industry,
             business_phone: data.businessPhone || null,
             business_website: data.businessWebsite || null,
+            business_address: data.scrapedAddress || null,
             country: data.country || "US",
             timezone: countryConfig?.defaultTimezone || "America/New_York",
           })
@@ -470,6 +498,7 @@ export default function OnboardingPage() {
                     businessName: data.businessName,
                     industry: data.industry,
                   }}
+                  scrapedCustomInstructions={data.scrapedCustomInstructions}
                   onChange={(updates) => updateData(updates)}
                 />
               )}
