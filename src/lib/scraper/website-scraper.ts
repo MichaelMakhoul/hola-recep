@@ -134,27 +134,68 @@ function extractMetaDescription(html: string): string | undefined {
 }
 
 /**
- * Extract business information from page content
+ * Check if a phone number looks valid (not a placeholder or junk)
  */
-function extractBusinessInfo(html: string, existingInfo: ScrapedWebsite['businessInfo']): ScrapedWebsite['businessInfo'] {
+function isValidPhone(phone: string): boolean {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 8) return false;
+  // Reject all-same-digit numbers (e.g. 3333333333)
+  if (/^(\d)\1+$/.test(digits)) return false;
+  // Reject sequential digits (e.g. 1234567890)
+  if (digits === '1234567890' || digits === '0987654321') return false;
+  // Reject numbers with 4+ leading zeros (e.g. 00000057)
+  if (/^0{4,}/.test(digits)) return false;
+  // Reject numbers where one digit makes up >70% of the string (e.g. 000000057)
+  const freq = new Map<string, number>();
+  for (const d of digits) freq.set(d, (freq.get(d) || 0) + 1);
+  for (const count of freq.values()) {
+    if (count / digits.length > 0.7) return false;
+  }
+  return true;
+}
+
+/**
+ * Extract business information from cleaned page text
+ */
+function extractBusinessInfo(text: string, existingInfo: ScrapedWebsite['businessInfo']): ScrapedWebsite['businessInfo'] {
   const info = { ...existingInfo };
 
-  // Extract phone numbers (US format)
-  const phonePattern = /(?:\+1[-.\s]?)?(?:\(?([0-9]{3})\)?[-.\s]?)([0-9]{3})[-.\s]?([0-9]{4})/g;
-  const phones = html.match(phonePattern);
-  if (phones && phones.length > 0 && !info.phone) {
-    info.phone = phones[0];
+  // Extract phone numbers (US + AU formats)
+  // Prefix is REQUIRED to avoid matching random digit sequences in HTML
+  const phonePatterns = [
+    // AU landline with +61: +61 2 8123 0183
+    /\+61[-.\s]?[2-478][-.\s]?[0-9]{4}[-.\s]?[0-9]{4}/g,
+    // AU landline with area code: (02) 8123 0183, 02 8123 0183
+    /\(?0[2-478]\)?[-.\s]?[0-9]{4}[-.\s]?[0-9]{4}/g,
+    // AU mobile: 0400 123 456, +61 400 123 456
+    /(?:\+61[-.\s]?)?04[0-9]{2}[-.\s]?[0-9]{3}[-.\s]?[0-9]{3}/g,
+    // US: (555) 123-4567, +1 555-123-4567
+    /(?:\+1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?)[0-9]{3}[-.\s]?[0-9]{4}/g,
+  ];
+
+  if (!info.phone) {
+    for (const pattern of phonePatterns) {
+      const phones = text.match(pattern);
+      const validPhone = phones?.find(p => isValidPhone(p));
+      if (validPhone) {
+        info.phone = validPhone;
+        break;
+      }
+    }
   }
 
   // Extract email addresses
   const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-  const emails = html.match(emailPattern);
+  const emails = text.match(emailPattern);
   if (emails && emails.length > 0 && !info.email) {
-    // Filter out common non-business emails
     const businessEmail = emails.find(e =>
       !e.includes('noreply') &&
       !e.includes('no-reply') &&
-      !e.includes('example.com')
+      !e.includes('example.com') &&
+      // Filter out image filenames (e.g. logo@2x-001-250x98.png)
+      !/\.(png|jpg|jpeg|gif|svg|webp|ico|bmp|tiff)$/i.test(e) &&
+      // Filter out retina image patterns (e.g. image@2x, icon@3x)
+      !/@[0-9]+x/i.test(e)
     );
     if (businessEmail) {
       info.email = businessEmail;
@@ -285,22 +326,22 @@ export function stringArrayField(val: unknown): string[] | undefined {
 export { buildCustomInstructionsFromBusinessInfo } from "./build-custom-instructions";
 
 /**
- * Extract rich business info from scraped pages using OpenAI GPT-4.1-nano.
+ * Extract rich business info from scraped pages using Claude Haiku 4.5.
  * Falls back to empty object on any failure — including malformed LLM JSON
  * responses — so it is always safe to merge with regex results.
  */
 export async function extractBusinessInfoWithLLM(
   pages: ScrapedPage[]
 ): Promise<ScrapedWebsite['businessInfo']> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    console.warn('[LLM Extract] OPENAI_API_KEY not set, skipping LLM extraction');
+    console.warn('[LLM Extract] ANTHROPIC_API_KEY not set, skipping LLM extraction');
     return {};
   }
 
   if (pages.length === 0) return {};
 
-  // Concatenate page text, truncated to ~8K chars
+  // Concatenate page text, capping total at 8K chars (may truncate mid-page)
   const MAX_CHARS = 8000;
   let text = '';
   for (const page of pages) {
@@ -316,36 +357,32 @@ export async function extractBusinessInfoWithLLM(
   const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'gpt-4.1-nano',
-        response_format: { type: 'json_object' },
-        messages: [
-          {
-            role: 'system',
-            content: `You are a business information extractor. Given website text, extract structured business details. Return a JSON object with these fields (all optional, omit if not found):
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1000,
+        system: `You are a business information extractor. Given website text, extract structured business details. Return ONLY a JSON object with these fields (all optional, omit if not found):
 - "name": string — the business name
 - "address": string — full street address
-- "phone": string — primary phone number
-- "email": string — primary email address
+- "phone": string — primary phone number (include country/area code if visible)
+- "email": string — primary contact email address (NOT image filenames or technical strings)
 - "hours": string[] — business hours, e.g. ["Monday: 9am-5pm", "Tuesday: 9am-5pm"]
 - "services": string[] — list of services offered (keep each concise, max 8 words)
 - "about": string — 1-2 sentence summary of what the business does
 
-Only include fields you are confident about. Return {} if no useful info is found.`,
-          },
+Only include fields you are confident about. Return {} if no useful info is found. Output raw JSON only, no markdown fences.`,
+        messages: [
           {
             role: 'user',
             content: text,
           },
         ],
-        temperature: 0,
-        max_tokens: 1000,
       }),
       signal: controller.signal,
     });
@@ -354,22 +391,28 @@ Only include fields you are confident about. Return {} if no useful info is foun
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '<unreadable>');
-      console.warn(`[LLM Extract] OpenAI API returned ${response.status}:`, errorBody.substring(0, 500));
+      console.warn(`[LLM Extract] Anthropic API returned ${response.status}:`, errorBody.substring(0, 500));
       return {};
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
+    const content = data.content?.[0]?.text;
     if (!content) {
-      console.warn('[LLM Extract] OpenAI returned empty content', {
-        finishReason: data.choices?.[0]?.finish_reason,
+      console.warn('[LLM Extract] Anthropic returned empty content', {
+        stopReason: data.stop_reason,
       });
       return {};
     }
 
+    // Strip markdown code fences if present (e.g. ```json\n{...}\n```)
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+    }
+
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(content);
+      parsed = JSON.parse(jsonStr);
     } catch (parseError) {
       console.warn('[LLM Extract] Failed to parse LLM JSON output:', {
         error: parseError instanceof Error ? parseError.message : parseError,
@@ -378,20 +421,40 @@ Only include fields you are confident about. Return {} if no useful info is foun
       return {};
     }
 
-    // Normalize to expected shape
+    // Filter out placeholder strings the LLM sometimes returns instead of omitting
+    const isPlaceholder = (v: unknown) =>
+      typeof v === 'string' && /^(not provided|not available|n\/a|none|unknown|null)$/i.test(v.trim());
+
+    // Verify phone digits actually appear in source text (prevents hallucination)
+    const llmPhone = stringField(parsed.phone);
+    let validatedPhone: string | undefined;
+    if (llmPhone && !isPlaceholder(llmPhone)) {
+      const phoneDigits = llmPhone.replace(/\D/g, '');
+      if (phoneDigits.length >= 8 && text.includes(phoneDigits)) {
+        validatedPhone = llmPhone;
+      } else {
+        console.warn('[LLM Extract] Phone not found in source text, discarding:', llmPhone);
+      }
+    }
+
+    const clean = (v: unknown) => {
+      const s = stringField(v);
+      return s && !isPlaceholder(s) ? s : undefined;
+    };
+
     return {
-      name: stringField(parsed.name),
-      address: stringField(parsed.address),
-      phone: stringField(parsed.phone),
-      email: stringField(parsed.email),
+      name: clean(parsed.name),
+      address: clean(parsed.address),
+      phone: validatedPhone,
+      email: clean(parsed.email),
       hours: stringArrayField(parsed.hours),
       services: stringArrayField(parsed.services),
-      about: stringField(parsed.about),
+      about: clean(parsed.about),
     };
   } catch (error) {
     clearTimeout(timeoutId);
     if (error instanceof DOMException && error.name === 'AbortError') {
-      console.warn('[LLM Extract] OpenAI request timed out (12s)');
+      console.warn('[LLM Extract] Anthropic request timed out (12s)');
     } else {
       console.warn('[LLM Extract] Network or unexpected error:', error);
     }
@@ -471,8 +534,8 @@ export async function scrapeWebsite(
       },
     });
 
-    // Extract business info
-    businessInfo = extractBusinessInfo(html, businessInfo);
+    // Extract business info from cleaned text (not raw HTML, which has junk numbers)
+    businessInfo = extractBusinessInfo(content, businessInfo);
 
     // Extract links for next level (if not at max depth)
     if (depth < (opts.maxDepth || 2)) {
