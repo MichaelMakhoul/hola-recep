@@ -65,7 +65,10 @@ const DEFAULT_OPTIONS: ScrapeOptions = {
 };
 
 /**
- * Extract clean text content from HTML
+ * Extract clean text content from HTML.
+ * NOTE: Strips <nav>, <header>, <footer> to reduce noise for KB content.
+ * Phone/email may appear in those elements — extractBusinessInfo runs on
+ * the full HTML separately to avoid missing them.
  */
 function extractTextContent(html: string): string {
   // Remove script and style elements
@@ -75,7 +78,7 @@ function extractTextContent(html: string): string {
   // Remove HTML comments
   cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
 
-  // Remove navigation, header, footer elements (common noise)
+  // Remove navigation, header, footer elements (common noise for KB content)
   cleaned = cleaned.replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, '');
   cleaned = cleaned.replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, '');
   cleaned = cleaned.replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, '');
@@ -94,6 +97,25 @@ function extractTextContent(html: string): string {
   // Normalize whitespace
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
+  return cleaned;
+}
+
+/**
+ * Extract ALL text from HTML (including header/footer) for phone/email extraction.
+ * Less aggressive than extractTextContent — keeps header/footer where contact info lives.
+ */
+function extractFullText(html: string): string {
+  let cleaned = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+  cleaned = cleaned.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+  cleaned = cleaned.replace(/<[^>]+>/g, ' ');
+  cleaned = cleaned.replace(/&nbsp;/g, ' ');
+  cleaned = cleaned.replace(/&amp;/g, '&');
+  cleaned = cleaned.replace(/&lt;/g, '<');
+  cleaned = cleaned.replace(/&gt;/g, '>');
+  cleaned = cleaned.replace(/&quot;/g, '"');
+  cleaned = cleaned.replace(/&#39;/g, "'");
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
   return cleaned;
 }
 
@@ -134,34 +156,47 @@ function extractMetaDescription(html: string): string | undefined {
 }
 
 /**
- * Check if a phone number looks valid (not a placeholder or junk)
+ * Check if a phone number looks plausible (not a placeholder, test number,
+ * or artifact). Does NOT validate that the number is actually dialable —
+ * this is a scraping heuristic only.
  */
 function isValidPhone(phone: string): boolean {
   const digits = phone.replace(/\D/g, '');
   if (digits.length < 8) return false;
-  // Reject all-same-digit numbers (e.g. 3333333333)
   if (/^(\d)\1+$/.test(digits)) return false;
-  // Reject sequential digits (e.g. 1234567890)
   if (digits === '1234567890' || digits === '0987654321') return false;
-  // Reject numbers with 4+ leading zeros (e.g. 00000057)
   if (/^0{4,}/.test(digits)) return false;
-  // Reject numbers where one digit makes up >70% of the string (e.g. 000000057)
-  const freq = new Map<string, number>();
-  for (const d of digits) freq.set(d, (freq.get(d) || 0) + 1);
-  for (const count of freq.values()) {
-    if (count / digits.length > 0.7) return false;
+  const digitCounts = new Map<string, number>();
+  for (const digit of digits) {
+    digitCounts.set(digit, (digitCounts.get(digit) || 0) + 1);
   }
+  const maxFrequency = Math.max(...digitCounts.values());
+  if (maxFrequency / digits.length > 0.7) return false;
   return true;
 }
 
 /**
- * Extract business information from cleaned page text
+ * Filter out non-business email addresses (noreply, image filenames, retina patterns)
+ */
+function isBusinessEmail(email: string): boolean {
+  if (email.includes('noreply') || email.includes('no-reply')) return false;
+  if (email.includes('example.com')) return false;
+  // Image filenames (e.g. logo@2x-001-250x98.png)
+  if (/\.(png|jpg|jpeg|gif|svg|webp|ico|bmp|tiff)$/i.test(email)) return false;
+  // Retina image suffixes at end of local part (e.g. image@2x — but NOT info@2xdesign.com)
+  if (/@[0-9]+x$/i.test(email.split('.')[0])) return false;
+  return true;
+}
+
+/**
+ * Extract business information from full page text (including header/footer).
  */
 function extractBusinessInfo(text: string, existingInfo: ScrapedWebsite['businessInfo']): ScrapedWebsite['businessInfo'] {
   const info = { ...existingInfo };
 
-  // Extract phone numbers (US + AU formats)
-  // Prefix is REQUIRED to avoid matching random digit sequences in HTML
+  // Multiple patterns in priority order (AU landline, AU mobile, US)
+  // AU patterns require country/area code prefixes; US patterns require
+  // structural markers (parens, separators, or +1) to avoid bare digit matches
   const phonePatterns = [
     // AU landline with +61: +61 2 8123 0183
     /\+61[-.\s]?[2-478][-.\s]?[0-9]{4}[-.\s]?[0-9]{4}/g,
@@ -169,8 +204,12 @@ function extractBusinessInfo(text: string, existingInfo: ScrapedWebsite['busines
     /\(?0[2-478]\)?[-.\s]?[0-9]{4}[-.\s]?[0-9]{4}/g,
     // AU mobile: 0400 123 456, +61 400 123 456
     /(?:\+61[-.\s]?)?04[0-9]{2}[-.\s]?[0-9]{3}[-.\s]?[0-9]{3}/g,
-    // US: (555) 123-4567, +1 555-123-4567
-    /(?:\+1[-.\s]?)?(?:\(?[0-9]{3}\)?[-.\s]?)[0-9]{3}[-.\s]?[0-9]{4}/g,
+    // US with +1 prefix: +1 555-123-4567
+    /\+1[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}/g,
+    // US with parens: (555) 123-4567
+    /\([0-9]{3}\)[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}/g,
+    // US with separators: 555-123-4567, 555.123.4567
+    /[0-9]{3}[-.][0-9]{3}[-.][0-9]{4}/g,
   ];
 
   if (!info.phone) {
@@ -184,19 +223,10 @@ function extractBusinessInfo(text: string, existingInfo: ScrapedWebsite['busines
     }
   }
 
-  // Extract email addresses
-  const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-  const emails = text.match(emailPattern);
-  if (emails && emails.length > 0 && !info.email) {
-    const businessEmail = emails.find(e =>
-      !e.includes('noreply') &&
-      !e.includes('no-reply') &&
-      !e.includes('example.com') &&
-      // Filter out image filenames (e.g. logo@2x-001-250x98.png)
-      !/\.(png|jpg|jpeg|gif|svg|webp|ico|bmp|tiff)$/i.test(e) &&
-      // Filter out retina image patterns (e.g. image@2x, icon@3x)
-      !/@[0-9]+x/i.test(e)
-    );
+  if (!info.email) {
+    const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const emails = text.match(emailPattern);
+    const businessEmail = emails?.find(isBusinessEmail);
     if (businessEmail) {
       info.email = businessEmail;
     }
@@ -235,7 +265,7 @@ function extractLinks(html: string, baseUrl: string): string[] {
         links.push(absoluteUrl);
       }
     } catch {
-      // Invalid URL, skip
+      // Malformed href, skip
     }
   }
 
@@ -314,6 +344,8 @@ async function fetchPage(url: string, timeout: number, maxRedirects = 5): Promis
   return null;
 }
 
+// ── LLM extraction helpers ──────────────────────────────────────────────
+
 export function stringField(val: unknown): string | undefined {
   return typeof val === 'string' ? val : undefined;
 }
@@ -322,11 +354,64 @@ export function stringArrayField(val: unknown): string[] | undefined {
   return Array.isArray(val) ? val.filter((item: unknown) => typeof item === 'string') : undefined;
 }
 
+/**
+ * Check if a value is a placeholder string the LLM returns instead of omitting
+ */
+function isPlaceholder(value: unknown): boolean {
+  return typeof value === 'string' &&
+    /^(not provided|not available|n\/a|none|unknown|null)$/i.test(value.trim());
+}
+
+/**
+ * Extract a meaningful string from an LLM field, returning undefined for
+ * placeholders, empty strings, and non-strings.
+ */
+function cleanLLMField(value: unknown): string | undefined {
+  const s = stringField(value);
+  return s && s.trim() !== '' && !isPlaceholder(s) ? s : undefined;
+}
+
+/**
+ * Filter placeholder strings from an LLM array field, returning undefined
+ * if the array is empty after filtering.
+ */
+function cleanLLMArrayField(value: unknown): string[] | undefined {
+  const arr = stringArrayField(value)?.filter(item => !isPlaceholder(item));
+  return arr && arr.length > 0 ? arr : undefined;
+}
+
+/**
+ * Strip markdown code fences (```json ... ```) that the LLM sometimes
+ * adds despite being told not to.
+ */
+function stripMarkdownFences(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('```')) return trimmed;
+  return trimmed.replace(/^```\w*\s*\n?/, '').replace(/\n?```\s*$/, '');
+}
+
+/**
+ * Validate an LLM-extracted phone by checking its digits appear in the
+ * source text. Returns the phone string if valid, undefined otherwise.
+ */
+function validateLLMPhone(phone: unknown, sourceText: string): string | undefined {
+  const value = cleanLLMField(phone);
+  if (!value) return undefined;
+
+  const digits = value.replace(/\D/g, '');
+  if (digits.length >= 8 && sourceText.includes(digits)) {
+    return value;
+  }
+
+  console.warn('[LLM Extract] Phone not found in source text, discarding:', value);
+  return undefined;
+}
+
 // Re-export for server-side consumers (API routes, etc.)
 export { buildCustomInstructionsFromBusinessInfo } from "./build-custom-instructions";
 
 /**
- * Extract rich business info from scraped pages using Claude Haiku 4.5.
+ * Extract rich business info from scraped pages using Claude Haiku.
  * Falls back to empty object on any failure — including malformed LLM JSON
  * responses — so it is always safe to merge with regex results.
  */
@@ -387,16 +472,26 @@ Only include fields you are confident about. Return {} if no useful info is foun
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
-
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '<unreadable>');
-      console.warn(`[LLM Extract] Anthropic API returned ${response.status}:`, errorBody.substring(0, 500));
+      console.error(`[LLM Extract] Anthropic API returned ${response.status}:`, errorBody.substring(0, 500));
       return {};
     }
 
-    const data = await response.json();
-    const content = data.content?.[0]?.text;
+    // Read response as text first, then parse — avoids losing context if body is non-JSON
+    const responseText = await response.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      console.error('[LLM Extract] Anthropic returned non-JSON response body:', {
+        contentType: response.headers.get('content-type'),
+        bodyPreview: responseText.substring(0, 200),
+      });
+      return {};
+    }
+
+    const content = (data.content as Array<{ text?: string }>)?.[0]?.text;
     if (!content) {
       console.warn('[LLM Extract] Anthropic returned empty content', {
         stopReason: data.stop_reason,
@@ -404,11 +499,7 @@ Only include fields you are confident about. Return {} if no useful info is foun
       return {};
     }
 
-    // Strip markdown code fences if present (e.g. ```json\n{...}\n```)
-    let jsonStr = content.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
-    }
+    const jsonStr = stripMarkdownFences(content);
 
     let parsed: Record<string, unknown>;
     try {
@@ -421,44 +512,24 @@ Only include fields you are confident about. Return {} if no useful info is foun
       return {};
     }
 
-    // Filter out placeholder strings the LLM sometimes returns instead of omitting
-    const isPlaceholder = (v: unknown) =>
-      typeof v === 'string' && /^(not provided|not available|n\/a|none|unknown|null)$/i.test(v.trim());
-
-    // Verify phone digits actually appear in source text (prevents hallucination)
-    const llmPhone = stringField(parsed.phone);
-    let validatedPhone: string | undefined;
-    if (llmPhone && !isPlaceholder(llmPhone)) {
-      const phoneDigits = llmPhone.replace(/\D/g, '');
-      if (phoneDigits.length >= 8 && text.includes(phoneDigits)) {
-        validatedPhone = llmPhone;
-      } else {
-        console.warn('[LLM Extract] Phone not found in source text, discarding:', llmPhone);
-      }
-    }
-
-    const clean = (v: unknown) => {
-      const s = stringField(v);
-      return s && !isPlaceholder(s) ? s : undefined;
-    };
-
     return {
-      name: clean(parsed.name),
-      address: clean(parsed.address),
-      phone: validatedPhone,
-      email: clean(parsed.email),
-      hours: stringArrayField(parsed.hours),
-      services: stringArrayField(parsed.services),
-      about: clean(parsed.about),
+      name: cleanLLMField(parsed.name),
+      address: cleanLLMField(parsed.address),
+      phone: validateLLMPhone(parsed.phone, text),
+      email: cleanLLMField(parsed.email),
+      hours: cleanLLMArrayField(parsed.hours),
+      services: cleanLLMArrayField(parsed.services),
+      about: cleanLLMField(parsed.about),
     };
   } catch (error) {
-    clearTimeout(timeoutId);
     if (error instanceof DOMException && error.name === 'AbortError') {
       console.warn('[LLM Extract] Anthropic request timed out (12s)');
     } else {
-      console.warn('[LLM Extract] Network or unexpected error:', error);
+      console.error('[LLM Extract] Unexpected error during extraction:', error);
     }
     return {};
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -534,8 +605,10 @@ export async function scrapeWebsite(
       },
     });
 
-    // Extract business info from cleaned text (not raw HTML, which has junk numbers)
-    businessInfo = extractBusinessInfo(content, businessInfo);
+    // Extract phone/email from full text (including header/footer where
+    // contact info typically lives) — not the stripped KB content
+    const fullText = extractFullText(html);
+    businessInfo = extractBusinessInfo(fullText, businessInfo);
 
     // Extract links for next level (if not at max depth)
     if (depth < (opts.maxDepth || 2)) {
