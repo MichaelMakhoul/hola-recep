@@ -15,6 +15,13 @@
  * turn-gate.test.js.
  */
 
+// SCRUM-576: this file is about CUSTOM_VAD turn markers, not the greeting.
+// The greeting guard holds inbound audio until the greeting is delivered,
+// which would starve the marker assertions. Opt out explicitly — the guard's
+// own behaviour is covered in greeting-guard.test.js. Set before requiring the
+// service; node's test runner gives each file its own process.
+process.env.GREETING_GUARD = "off";
+
 const { test, before } = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
@@ -91,9 +98,6 @@ function makeReadySession() {
   const ws = created[created.length - 1];
   ws.emit("open");
   ws.emit("message", JSON.stringify({ setupComplete: {} }));
-  // SCRUM-576: close the greeting turn so inbound audio is no longer held.
-  // These tests are about turn markers mid-call, not about the greeting.
-  ws.emit("message", JSON.stringify({ serverContent: { turnComplete: true } }));
   return { session, ws };
 }
 
@@ -188,8 +192,6 @@ test("marker send failures: first Sentry-warns (one dropped turn is correlatable
     const ws = created[created.length - 1];
     ws.emit("open");
     ws.emit("message", JSON.stringify({ setupComplete: {} }));
-    // SCRUM-576: past the greeting turn, so inbound audio reaches the marker path.
-    ws.emit("message", JSON.stringify({ serverContent: { turnComplete: true } }));
     // markers throw; audio sends keep succeeding (so the audio path's counter
     // keeps resetting — the marker path needs its OWN escalation)
     const origSend = ws.send.bind(ws);

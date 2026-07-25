@@ -66,7 +66,18 @@ describe("SCRUM-577: CSP allows Google Ads conversion delivery", () => {
     expect(config).toContain("default-src 'self'");
     expect(config).toContain("object-src 'none'");
     expect(config).toContain("frame-ancestors 'none'");
-    expect(directive("connect-src")).not.toContain("*;");
-    expect(directive("script-src")).not.toMatch(/\shttps:\s|\s\*\s/);
+
+    // Asserted by TOKEN, not substring. The earlier version used
+    // `not.toContain("*;")` and `not.toMatch(/\s\*\s/)` — neither could ever
+    // fail: directives are separate array elements in the source, so the "; "
+    // separator only exists after `.join("; ")` at runtime, and a wildcard
+    // appended at end-of-line has no trailing space to match. Both assertions
+    // were green while pinning nothing.
+    const tokens = (name: string): string[] => directive(name).split(/\s+/);
+    for (const name of ["connect-src", "script-src", "img-src"]) {
+      expect(tokens(name)).not.toContain("*");
+      expect(tokens(name)).not.toContain("https:");
+      expect(tokens(name)).not.toContain("http:");
+    }
   });
 });

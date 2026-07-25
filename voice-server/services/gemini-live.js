@@ -11,6 +11,16 @@ const { twilioToGemini, geminiToTwilio } = require("../lib/audio-converter");
 const { createSessionFrontend } = require("../lib/audio-frontend");
 const { TurnGate, customVadEnabled } = require("../lib/turn-gate");
 const { createGreetingGuard } = require("../lib/greeting-guard");
+const { performance } = require("node:perf_hooks");
+
+/**
+ * Monotonic clock for the greeting guard's windows (SCRUM-576). Deliberately
+ * NOT Date.now(): a backward wall-clock step (NTP correction) while the guard
+ * is armed would make its elapsed comparisons negative, so both bounds would
+ * pass and the caller's audio would be dropped for the length of the step —
+ * the unbounded mute the guard exists to prevent.
+ */
+const nowMs = () => performance.now();
 
 // One-shot per process (SCRUM-556): alert the first time CUSTOM_VAD is
 // requested but can't actually run, so a fleet-wide flag that silently
@@ -354,6 +364,41 @@ function createGeminiSession(config, callbacks) {
     }
   }
 
+  /**
+   * SCRUM-576: act on the greeting guard's verdict after a failed greeting
+   * attempt. Both failure signals — a cancelled turn and a turn that ended
+   * with no audio — route through here so neither can be handled and the
+   * other forgotten.
+   * @param {boolean} shouldRetrigger - the guard's verdict
+   * @param {string} reason - what went wrong, for the log/alert
+   */
+  function handleGreetingRecovery(shouldRetrigger, reason) {
+    if (shouldRetrigger) {
+      console.warn(`[GeminiLive] Greeting ${reason} — re-sending greeting trigger`);
+      // A re-trigger means the caller came within one step of the original
+      // silent-call bug. Rare by construction, and the fleet-wide rate is the
+      // leading indicator we'd otherwise never see.
+      Sentry.captureMessage(`Greeting ${reason} — re-triggering (SCRUM-576)`, "warning");
+      if (!sendGreetingTrigger("retrigger")) {
+        console.error("[GeminiLive] Greeting re-trigger could not be sent — caller may be stranded in silence");
+        Sentry.captureMessage("Greeting re-trigger could not be sent — caller may be stranded in silence", "error");
+      }
+      return;
+    }
+    if (greetingGuard.takeGiveUpNotice()) {
+      // Recovery exhausted: the caller is back in the exact failure this guard
+      // exists to prevent — no greeting, both sides waiting. Nothing throws and
+      // no call ends, so without this it is invisible, which is how the
+      // original bug survived. "error", not "warning": a whole call is lost
+      // live for a customer's caller, and it is rare by construction.
+      console.error("[GeminiLive] Greeting never delivered after max re-triggers — caller stranded in silence");
+      Sentry.captureMessage(
+        "Greeting never delivered after max re-triggers — caller stranded in silence (SCRUM-576)",
+        "error"
+      );
+    }
+  }
+
   ws.on("message", async (data) => {
     let msg;
     try {
@@ -384,12 +429,23 @@ function createGeminiSession(config, callbacks) {
       // Trigger Gemini to speak the greeting immediately (see
       // sendGreetingTrigger for the realtimeInput.text protocol note).
       // Outbound caller personas disable this — they should wait for the receptionist to greet.
-      if (config.triggerGreeting !== false) {
+      // Edge-triggered on firstAck for the same reason onSetupComplete is: a
+      // duplicate setupComplete from Gemini would otherwise re-send
+      // "Call connected." mid-call and have the AI re-introduce itself in the
+      // middle of a booking — and re-arm the greeting guard, so the next
+      // ordinary barge-in would read as "greeting cancelled" and replay it again.
+      if (firstAck && config.triggerGreeting !== false) {
         // SCRUM-576: arm the guard ONLY on a trigger we actually sent. Arming
         // after a failed send would hold the caller's audio waiting for a
         // greeting that was never requested.
         if (sendGreetingTrigger()) {
-          greetingGuard.onGreetingTriggered(Date.now());
+          greetingGuard.onGreetingTriggered(nowMs());
+        } else {
+          // The site that decides whether this call gets a greeting AT ALL.
+          // Failing here silently means a caller who will never be greeted on a
+          // session that looks completely normal.
+          console.error(`[GeminiLive] Greeting trigger not sent (readyState=${ws.readyState}) — caller would hear nothing`);
+          Sentry.captureMessage("Greeting trigger not sent at setupComplete — caller would hear nothing", "error");
         }
       } else {
         console.log("[GeminiLive] Greeting trigger skipped (triggerGreeting=false)");
@@ -420,7 +476,7 @@ function createGeminiSession(config, callbacks) {
               // SCRUM-576: stamped on the CONVERTED chunk — this is the first
               // moment the caller could actually hear the greeting, which is
               // what "did they hear it?" must be measured from.
-              greetingGuard.onOutputAudio(Date.now());
+              greetingGuard.onOutputAudio(nowMs());
               callbacks.onAudio(twilioAudio);
             } catch (err) {
               console.error("[GeminiLive] Audio conversion error:", err.message);
@@ -448,19 +504,15 @@ function createGeminiSession(config, callbacks) {
         // discarded its turn, so the queued audio must still be flushed
         // whatever the guard decides. SCRUM-576 only adds recovery on top.
         callbacks.onInterrupted?.();
-        if (greetingGuard.onInterrupt(Date.now())) {
-          console.warn("[GeminiLive] Greeting cancelled before the caller heard it — re-sending greeting trigger");
-          if (!sendGreetingTrigger("retrigger")) {
-            // The socket died between the cancel and the retry. Nothing left to
-            // recover with, and the session teardown path owns it from here.
-            console.error("[GeminiLive] Greeting re-trigger could not be sent");
-          }
-        }
+        handleGreetingRecovery(greetingGuard.onInterrupt(nowMs()), "cancelled before the caller heard it");
       }
 
       // Turn complete
       if (sc.turnComplete) {
-        greetingGuard.onTurnComplete(Date.now());
+        // Read off the SAME serverContent as sc.interrupted above: a message
+        // carrying both lands here immediately after a re-trigger, so the
+        // guard — not this call site — decides whether that stale turn counts.
+        handleGreetingRecovery(greetingGuard.onTurnComplete(nowMs()), "turn ended with no audio");
         callbacks.onTurnComplete?.();
         // If end_call fired during this turn, Gemini has now finished
         // streaming the closing audio. Schedule the WS close after a short
@@ -603,6 +655,16 @@ function createGeminiSession(config, callbacks) {
     const wireReason = reason ? reason.toString() : "";
     const effectiveReason = intentionalCloseReason || wireReason;
     console.log(`[GeminiLive] WebSocket closed (code=${code}, reason="${effectiveReason}")`);
+    // SCRUM-576: record whether the greeting actually reached the caller. The
+    // original incident "looked successful in every metric collected" precisely
+    // because no metric answered that question. heldFrames also measures the
+    // documented trade-off (caller audio dropped while the greeting played).
+    if (config.triggerGreeting !== false) {
+      const g = greetingGuard.stats();
+      console.log(
+        `[GeminiLive] Greeting outcome: delivered=${g.delivered} retriggers=${g.retriggers} silentTurns=${g.silentTurns} heldFrames=${g.heldFrames}`
+      );
+    }
     callbacks.onClose?.(code, effectiveReason);
   });
 
@@ -623,7 +685,7 @@ function createGeminiSession(config, callbacks) {
       // the greeting — the failure that left a caller in 17s of silence. The
       // guard releases on turnComplete, or on its own bounded timeout, so this
       // can never mute a caller for the rest of the call.
-      if (greetingGuard.shouldHoldInbound(Date.now())) return;
+      if (greetingGuard.shouldHoldInbound(nowMs())) return;
       try {
         const geminiAudio = audioFrontend
           ? audioFrontend.processTwilioFrame(twilioBase64)

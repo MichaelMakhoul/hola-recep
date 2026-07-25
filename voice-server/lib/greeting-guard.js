@@ -58,10 +58,11 @@ function greetingGuardEnabled() {
  * @typedef {Object} GreetingGuard
  * @property {(now: number) => void} onGreetingTriggered - the greeting trigger was sent
  * @property {(now: number) => void} onOutputAudio - a model audio chunk arrived
- * @property {(now: number) => void} onTurnComplete - a model turn finished
+ * @property {(now: number) => boolean} onTurnComplete - true → re-send the greeting trigger
  * @property {(now: number) => boolean} shouldHoldInbound - true → drop this caller frame
  * @property {(now: number) => boolean} onInterrupt - true → re-send the greeting trigger
- * @property {() => { armed: boolean, delivered: boolean, retriggers: number }} stats
+ * @property {() => boolean} takeGiveUpNotice - consume the "recovery exhausted" flag (true at most once)
+ * @property {() => { armed: boolean, delivered: boolean, retriggers: number, silentTurns: number, heldFrames: number }} stats
  */
 
 /**
@@ -91,6 +92,9 @@ function createGreetingGuard(opts = {}) {
   let firstArmedAt = 0; // never moves — backs the absolute cap
   let audioStartedAt = null; // when the caller first heard this attempt
   let retriggers = 0;
+  let giveUpNotice = false; // set once when recovery is exhausted; consumed by the call site
+  let silentTurns = 0; // greeting turns that ended without the caller hearing anything
+  let heldFrames = 0; // caller frames dropped while protecting the greeting
 
   /** Stop guarding: the greeting is resolved one way or another. */
   function disarm() {
@@ -98,9 +102,41 @@ function createGreetingGuard(opts = {}) {
     audioStartedAt = null;
   }
 
+  /**
+   * The current attempt failed before the caller heard a greeting. Start
+   * another attempt, or give up (loudly) if recovery is exhausted.
+   * Shared by BOTH failure signals — a cancelled turn (`interrupted`) and a
+   * turn that simply ended without audio — because they are the same failure
+   * wearing different hats, and handling only the first is how the original
+   * bug survived its own fix.
+   * @param {number} now
+   * @returns {boolean} true → the call site should re-send the greeting trigger
+   */
+  function retryOrGiveUp(now) {
+    if (retriggers >= maxRetriggers) {
+      // The caller is now in the ORIGINAL failure state: no greeting, both
+      // sides waiting. Flag it so the call site can escalate — silence here is
+      // how the first bug survived in production for months. Release the
+      // caller's audio too, so they can at least be heard.
+      giveUpNotice = true;
+      disarm();
+      return false;
+    }
+    retriggers++;
+    attemptStartedAt = now;
+    audioStartedAt = null;
+    return true;
+  }
+
   return {
     onGreetingTriggered(now) {
       if (!enabled) return;
+      // Defence in depth against a duplicate setupComplete (the call site gates
+      // on firstAck, but this guard must not depend on that to stay safe):
+      // re-arming after the greeting was delivered would make the next
+      // ordinary mid-call barge-in look like "cancelled before the caller
+      // heard it" and replay the greeting during a live conversation.
+      if (delivered) return;
       armed = true;
       delivered = false;
       attemptStartedAt = now;
@@ -113,21 +149,53 @@ function createGreetingGuard(opts = {}) {
       if (audioStartedAt === null) audioStartedAt = now;
     },
 
-    onTurnComplete() {
-      if (!armed) return;
+    onTurnComplete(now) {
+      if (!armed) return false;
+      if (audioStartedAt === null) {
+        // The turn closed without the caller hearing a single chunk. Treating
+        // that as "delivered" recorded a silent call as a success and left the
+        // guard permanently inert. It is also how a STALE turnComplete for an
+        // already-cancelled turn lands (gemini-live reads sc.interrupted and
+        // sc.turnComplete off the same message, in that order), which would
+        // otherwise disarm the retry we just started.
+        silentTurns++;
+        return retryOrGiveUp(now);
+      }
       delivered = true;
       disarm();
+      return false;
     },
 
     shouldHoldInbound(now) {
       if (!enabled || !armed) return false;
+      // A clock that moved BACKWARDS makes both elapsed comparisons negative,
+      // so both windows would "pass" and the caller would stay muted until the
+      // clock caught up — unbounded, which is the outcome this guard exists to
+      // prevent. Fail SAFE and stop holding. (Call sites pass a monotonic
+      // clock, so this is unreachable there; it is here so the guard is safe
+      // for any caller, including one that passes Date.now().)
+      // NOTE: clamping the elapsed values to 0 instead does NOT work — 0 is
+      // inside both windows, so it still returns "hold".
+      if (now < attemptStartedAt || now < firstArmedAt) return false;
       // Both windows must hold: the per-attempt one bounds a stuck turn, the
       // absolute one bounds repeated re-triggers.
-      return now - attemptStartedAt < maxHoldMs && now - firstArmedAt < absoluteHoldCapMs;
+      const hold = now - attemptStartedAt < maxHoldMs && now - firstArmedAt < absoluteHoldCapMs;
+      if (hold) heldFrames++;
+      return hold;
     },
 
     onInterrupt(now) {
       if (!enabled || !armed) return false;
+
+      // Recovery lives and dies with the greeting window. If a turn never
+      // emitted audio and never completed, `armed` would otherwise stay true
+      // for the whole call, and an interrupt minutes later still looks like
+      // "cancelled before the caller heard it" — re-injecting the greeting on
+      // top of a live conversation.
+      if (now - firstArmedAt >= absoluteHoldCapMs) {
+        disarm();
+        return false;
+      }
 
       const heardMs = audioStartedAt === null ? 0 : now - audioStartedAt;
       if (heardMs >= minHeardMs) {
@@ -138,22 +206,23 @@ function createGreetingGuard(opts = {}) {
         return false;
       }
 
-      if (retriggers >= maxRetriggers) {
-        // Something is persistently cancelling the greeting. Give up rather
-        // than loop — and release the caller's audio so they can at least be
-        // heard, which is the best remaining outcome.
-        disarm();
-        return false;
-      }
+      return retryOrGiveUp(now);
+    },
 
-      retriggers++;
-      attemptStartedAt = now;
-      audioStartedAt = null;
+    /**
+     * Consume the "recovery exhausted" flag. Returns true at most once per
+     * session, so the call site alerts on the give-up itself rather than on
+     * every subsequent barge-in of the call.
+     * @returns {boolean}
+     */
+    takeGiveUpNotice() {
+      if (!giveUpNotice) return false;
+      giveUpNotice = false;
       return true;
     },
 
     stats() {
-      return { armed, delivered, retriggers };
+      return { armed, delivered, retriggers, silentTurns, heldFrames };
     },
   };
 }
