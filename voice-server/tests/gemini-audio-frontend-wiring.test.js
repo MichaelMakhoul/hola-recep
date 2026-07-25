@@ -14,6 +14,15 @@
  * service (the repo's established pattern — see gemini-live-setup-complete).
  */
 
+// SCRUM-576: this file is about the inbound audio FRONT-END, not the greeting.
+// The greeting guard holds inbound audio until the greeting is delivered (a
+// turn that emits real audio), which would starve every assertion here. Opt
+// out explicitly rather than faking a greeting turn — the guard's own
+// behaviour is covered in greeting-guard.test.js. Set before requiring the
+// service; node's test runner gives each file its own process, so this cannot
+// leak into other suites.
+process.env.GREETING_GUARD = "off";
+
 const { test, before } = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
@@ -71,12 +80,6 @@ function makeReadySession() {
   const ws = created[created.length - 1];
   ws.emit("open");
   ws.emit("message", JSON.stringify({ setupComplete: {} }));
-  // SCRUM-576: setupComplete now also fires the greeting trigger, and inbound
-  // audio is held for the duration of the greeting turn so room noise can't
-  // cancel it. Close that turn so these tests exercise a genuine MID-CALL
-  // session — which is the state they mean by "ready" — rather than a session
-  // that is still greeting.
-  ws.emit("message", JSON.stringify({ serverContent: { turnComplete: true } }));
   return { session, ws };
 }
 

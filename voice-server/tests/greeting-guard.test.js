@@ -173,6 +173,23 @@ describe("SCRUM-576: greeting guard — recovery when the greeting is cancelled"
     assert.equal(g.onInterrupt(T0 + 90_000), false);
   });
 
+  it("a DUPLICATE greeting trigger after delivery cannot re-arm the guard", () => {
+    // gemini-live's setupComplete handler already carries a `firstAck` guard
+    // because Gemini can send a duplicate setupComplete ("a duplicate ack must
+    // not re-fire consumers", SCRUM-535). If a duplicate re-armed this guard
+    // mid-call, the next ordinary barge-in would look like "greeting cancelled
+    // before the caller heard it" and re-send the greeting trigger — the AI
+    // would re-introduce itself in the middle of a booking.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    g.onOutputAudio(T0 + 400);
+    g.onTurnComplete(T0 + 3000);
+
+    g.onGreetingTriggered(T0 + 60_000); // duplicate setupComplete, mid-call
+    assert.equal(g.shouldHoldInbound(T0 + 60_100), false, "must not start muting the caller mid-call");
+    assert.equal(g.onInterrupt(T0 + 61_000), false, "must not replay the greeting mid-booking");
+  });
+
   it("a second turn's audio cannot re-arm the guard", () => {
     // onOutputAudio/onTurnComplete fire for EVERY turn, not just the greeting.
     const g = createGreetingGuard({ enabled: true });
@@ -185,12 +202,125 @@ describe("SCRUM-576: greeting guard — recovery when the greeting is cancelled"
   });
 });
 
+describe("SCRUM-576: greeting guard — a turn that ends without audio is NOT a delivered greeting", () => {
+  it("turnComplete with no audio does not count as delivered, and asks for recovery", () => {
+    // The guard's only failure detector was `interrupted`. A greeting turn that
+    // simply ENDS without audio (safety-filtered, empty, or every chunk failing
+    // geminiToTwilio conversion — that catch means onOutputAudio never fires)
+    // was recorded as success and the guard went permanently inert. That is
+    // SCRUM-576 reproduced straight through the fix.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    assert.equal(g.onTurnComplete(T0 + 900), true, "must ask for a re-trigger, not declare success");
+    assert.equal(g.stats().delivered, false, "must not claim the caller heard a greeting");
+  });
+
+  it("a turnComplete arriving WITH an interrupt cannot disarm the fresh retry", () => {
+    // gemini-live reads sc.interrupted and sc.turnComplete off the SAME
+    // serverContent object, in that order. One message carrying both would
+    // re-trigger and then immediately disarm, so attempt 2 would run with no
+    // recovery left and inbound audio flowing.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    assert.equal(g.onInterrupt(T0 + 300), true, "the cancel re-triggers");
+    g.onTurnComplete(T0 + 300); // same message, stale turn
+    assert.equal(g.stats().delivered, false, "the cancelled turn must not read as delivered");
+    assert.equal(g.shouldHoldInbound(T0 + 400), true, "the retry must still be protected");
+  });
+
+  it("a turn WITH audio still delivers normally", () => {
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    g.onOutputAudio(T0 + 400);
+    assert.equal(g.onTurnComplete(T0 + 3000), false, "no recovery needed");
+    assert.equal(g.stats().delivered, true);
+    assert.equal(g.shouldHoldInbound(T0 + 3001), false);
+  });
+
+  it("repeated silent turns give up and raise the alert, rather than looping", () => {
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    let now = T0;
+    for (let i = 0; i < GREETING_MAX_RETRIGGERS; i++) {
+      now += 500;
+      assert.equal(g.onTurnComplete(now), true, `silent turn ${i + 1} retries`);
+    }
+    now += 500;
+    assert.equal(g.onTurnComplete(now), false, "past the cap it stops retrying");
+    assert.equal(g.takeGiveUpNotice(), true, "and says so");
+  });
+});
+
+describe("SCRUM-576: greeting guard — a backward clock must not mute the caller", () => {
+  it("stops holding if time moves backwards", () => {
+    // Both elapsed comparisons go negative on a backward step, so both windows
+    // would "pass" and the caller would stay muted until the clock caught up —
+    // unbounded. Clamping the elapsed values to 0 does NOT fix it (0 is inside
+    // both windows); the guard has to fail safe and release.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    assert.equal(g.shouldHoldInbound(T0 + 100), true, "normal forward time still holds");
+    assert.equal(g.shouldHoldInbound(T0 - 5_000), false, "backward step must release the caller");
+  });
+});
+
+describe("SCRUM-576: greeting guard — recovery expires with the greeting window", () => {
+  it("a LATE interrupt cannot replay the greeting mid-call", () => {
+    // If a greeting turn never emits audio and never completes, `armed` stayed
+    // true for the whole call: an interrupt minutes later still saw heardMs=0
+    // and re-injected the greeting over a live conversation.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    assert.equal(
+      g.onInterrupt(T0 + GREETING_ABSOLUTE_HOLD_CAP_MS + 1),
+      false,
+      "past the absolute cap the greeting is over — never re-inject it"
+    );
+    assert.equal(g.shouldHoldInbound(T0 + GREETING_ABSOLUTE_HOLD_CAP_MS + 2), false);
+  });
+
+  it("an interrupt just INSIDE the cap still recovers", () => {
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    assert.equal(g.onInterrupt(T0 + GREETING_ABSOLUTE_HOLD_CAP_MS - 1), true);
+  });
+});
+
 describe("SCRUM-576: greeting guard — kill switch", () => {
   it("disabled: never holds and never re-triggers", () => {
     const g = createGreetingGuard({ enabled: false });
     g.onGreetingTriggered(T0);
     assert.equal(g.shouldHoldInbound(T0 + 1), false);
     assert.equal(g.onInterrupt(T0 + 354), false);
+  });
+
+  it("giving up raises an alertable notice, exactly once", () => {
+    // When the retry cap is exhausted the caller is left in the ORIGINAL
+    // failure state: no greeting, both sides silent. That must not be
+    // invisible — being invisible is precisely why the first bug survived in
+    // production. The call site turns this into a Sentry event, matching how
+    // the CUSTOM_VAD fallback and marker failures escalate in the same file.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    let now = T0;
+    for (let i = 0; i < GREETING_MAX_RETRIGGERS; i++) {
+      now += 100;
+      g.onInterrupt(now);
+    }
+    assert.equal(g.takeGiveUpNotice(), false, "no notice while re-triggering is still working");
+
+    assert.equal(g.onInterrupt(now + 100), false, "this is the give-up");
+    assert.equal(g.takeGiveUpNotice(), true, "the give-up must be reportable");
+    assert.equal(g.takeGiveUpNotice(), false, "consumed — must not re-alert on every later barge-in");
+  });
+
+  it("a normal barge-in over an audible greeting raises NO alert", () => {
+    // Paging on ordinary caller behaviour would train everyone to ignore it.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    g.onOutputAudio(T0 + 500);
+    g.onInterrupt(T0 + 500 + GREETING_MIN_HEARD_MS + 1);
+    assert.equal(g.takeGiveUpNotice(), false);
   });
 
   it("exposes counters for the session summary", () => {
