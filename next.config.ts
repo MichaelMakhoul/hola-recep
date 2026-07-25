@@ -26,11 +26,17 @@ const securityHeaders = [
       // via middleware + interactive verification that static pages and
       // hydration survive; tracked as a dedicated follow-up (SCRUM-448).
       // SCRUM-436: challenges.cloudflare.com is Cloudflare Turnstile (script + challenge iframe).
-      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://js.stripe.com https://www.googletagmanager.com https://challenges.cloudflare.com`,
+      // SCRUM-577: www.googleadservices.com + googleads.g.doubleclick.net are the
+      // Google Ads conversion scripts gtag pulls in once a conversion fires.
+      `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""} https://js.stripe.com https://www.googletagmanager.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://challenges.cloudflare.com`,
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com",
-      "img-src 'self' data: blob: https://*.supabase.co https://api.dicebear.com https://www.google-analytics.com",
-      `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.stripe.com https://api.elevenlabs.io https://api.cal.com wss://*.fly.dev https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com${isDev ? " ws://localhost:* wss://localhost:*" : ""}`,
+      // SCRUM-577: Google ADS delivers conversions to its own hosts, not to
+      // google-analytics.com — without these the browser refused every
+      // conversion beacon (both the fetch and the image fallback), so Ads
+      // recorded zero conversions no matter how many leads came in.
+      "img-src 'self' data: blob: https://*.supabase.co https://api.dicebear.com https://www.google-analytics.com https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net https://www.google.com https://www.google.com.au",
+      `connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.stripe.com https://api.elevenlabs.io https://api.cal.com wss://*.fly.dev https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net https://www.googleadservices.com https://www.google.com https://www.google.com.au${isDev ? " ws://localhost:* wss://localhost:*" : ""}`,
       "worker-src 'self' blob:",
       "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com",
       "media-src 'self' blob: https://*.supabase.co",
