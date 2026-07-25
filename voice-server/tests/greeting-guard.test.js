@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   createGreetingGuard,
+  greetingGuardEnabled,
   GREETING_MAX_HOLD_MS,
   GREETING_ABSOLUTE_HOLD_CAP_MS,
   GREETING_MIN_HEARD_MS,
@@ -251,6 +252,115 @@ describe("SCRUM-576: greeting guard — a turn that ends without audio is NOT a 
   });
 });
 
+describe("SCRUM-576: greeting guard — the greeting window is TERMINAL", () => {
+  // The caps used to only silence shouldHoldInbound; `armed` stayed true for
+  // the rest of the call whenever an attempt drew no turnComplete at all —
+  // which is exactly what the logged incident shows Gemini doing. An armed
+  // guard then treats a LATER turn as the greeting.
+  const stuck = () => {
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    g.onInterrupt(T0 + 354); // retrigger; Gemini then goes silent forever
+    return g;
+  };
+
+  it("resolves itself once the caps expire, with no turnComplete ever arriving", () => {
+    const g = stuck();
+    g.shouldHoldInbound(T0 + GREETING_ABSOLUTE_HOLD_CAP_MS + 1);
+    assert.equal(g.stats().armed, false, "past the caps it must be RESOLVED, not merely quiet");
+  });
+
+  it("a mid-call turn that ends without audio never replays the greeting", () => {
+    // The path the onInterrupt cap check does not cover: turnComplete routes
+    // straight into recovery, so a later tool-only/empty turn re-sent
+    // "Call connected." into a live booking.
+    assert.equal(stuck().onTurnComplete(T0 + 31_000), false, "31s in");
+    assert.equal(stuck().onTurnComplete(T0 + 300_000), false, "5 minutes in");
+  });
+
+  it("a later turn's audio is never mistaken for the greeting", () => {
+    const g = stuck();
+    g.onOutputAudio(T0 + 31_000); // the AI answering a question 30s into the call
+    assert.equal(g.onInterrupt(T0 + 31_300), false, "a fast barge-in must not re-send the greeting");
+  });
+});
+
+describe("SCRUM-576: greeting guard — heard-time is measured from the FIRST chunk", () => {
+  it("streaming audio does not keep resetting the heard clock", () => {
+    // If each chunk restamped the start, heard-time stays ~0 for the whole
+    // greeting and a barge-in 2s in reads as "heard nothing" → the greeting
+    // replays over the caller. Every other test emits exactly one chunk, so
+    // this is the only thing standing between that mutation and production.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    for (let i = 0; i < 20; i++) g.onOutputAudio(T0 + 100 + i * 100);
+    assert.equal(g.onInterrupt(T0 + 2_200), false, "2s of greeting heard = a real barge-in");
+  });
+
+  it("a retry measures heard-time from ITS OWN audio, not the previous attempt's", () => {
+    // Without the reset, attempt 2's heard-time is measured from attempt 1's
+    // chunk, so a second fragment-cancel reads as a genuine barge-in and the
+    // caller is left with no greeting and no recovery.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    g.onOutputAudio(T0 + 100);
+    assert.equal(g.onInterrupt(T0 + 300), true, "fragment heard → retry");
+    g.onOutputAudio(T0 + 700);
+    assert.equal(g.onInterrupt(T0 + 900), true, "another fragment → retry again, not 'barge-in'");
+  });
+});
+
+describe("SCRUM-576: greeting guard — the production default must stay ON", () => {
+  const withEnv = (value, fn) => {
+    const prev = process.env.GREETING_GUARD;
+    if (value === undefined) delete process.env.GREETING_GUARD;
+    else process.env.GREETING_GUARD = value;
+    try { return fn(); } finally {
+      if (prev === undefined) delete process.env.GREETING_GUARD;
+      else process.env.GREETING_GUARD = prev;
+    }
+  };
+
+  it("defaults to ON when the env var is unset — the production path", () => {
+    // Every other test injects `enabled` explicitly, so nothing else covers
+    // greetingGuardEnabled(). A mutation there ships the whole fix DEAD with a
+    // fully green suite.
+    assert.equal(withEnv(undefined, greetingGuardEnabled), true);
+    assert.equal(withEnv("", greetingGuardEnabled), true);
+    assert.equal(withEnv("on", greetingGuardEnabled), true);
+    assert.equal(withEnv("false", greetingGuardEnabled), true, "only 'off' disables — not any falsy-looking word");
+  });
+
+  it("only the documented kill switch disables it, case/space-insensitively", () => {
+    assert.equal(withEnv("off", greetingGuardEnabled), false);
+    assert.equal(withEnv("OFF", greetingGuardEnabled), false);
+    assert.equal(withEnv("  off  ", greetingGuardEnabled), false);
+  });
+
+  it("a default-constructed guard is live (no args = production shape)", () => {
+    withEnv(undefined, () => {
+      const g = createGreetingGuard();
+      g.onGreetingTriggered(T0);
+      assert.equal(g.shouldHoldInbound(T0 + 100), true);
+    });
+  });
+});
+
+describe("SCRUM-576: greeting guard — the tuned constants are the contract", () => {
+  it("holds are short enough that a caller is never meaningfully muted", () => {
+    // Tests reference these symbolically, so proportional inflation (6s→40s
+    // AND 9s→60s together) satisfies every relational assertion while muting a
+    // caller for a minute. .env.example promises "6s per attempt, 9s absolute".
+    assert.ok(GREETING_MAX_HOLD_MS <= 8_000, `per-attempt hold too long: ${GREETING_MAX_HOLD_MS}ms`);
+    assert.ok(GREETING_ABSOLUTE_HOLD_CAP_MS <= 12_000, `absolute hold too long: ${GREETING_ABSOLUTE_HOLD_CAP_MS}ms`);
+  });
+
+  it("the barge-in threshold stays short enough to be a real barge-in", () => {
+    // Inflating this replays the greeting over anyone who interrupts early.
+    assert.ok(GREETING_MIN_HEARD_MS <= 1_500, `min-heard too long: ${GREETING_MIN_HEARD_MS}ms`);
+  });
+});
+
 describe("SCRUM-576: greeting guard — a backward clock must not mute the caller", () => {
   it("stops holding if time moves backwards", () => {
     // Both elapsed comparisons go negative on a backward step, so both windows
@@ -279,10 +389,24 @@ describe("SCRUM-576: greeting guard — recovery expires with the greeting windo
     assert.equal(g.shouldHoldInbound(T0 + GREETING_ABSOLUTE_HOLD_CAP_MS + 2), false);
   });
 
-  it("an interrupt just INSIDE the cap still recovers", () => {
+  it("an interrupt inside the attempt window still recovers", () => {
     const g = createGreetingGuard({ enabled: true });
     g.onGreetingTriggered(T0);
-    assert.equal(g.onInterrupt(T0 + GREETING_ABSOLUTE_HOLD_CAP_MS - 1), true);
+    assert.equal(g.onInterrupt(T0 + GREETING_MAX_HOLD_MS - 1), true);
+  });
+
+  it("recovery ends at the PER-ATTEMPT bound, not just the absolute one", () => {
+    // A greeting attempt that drew nothing for the whole hold window is dead.
+    // Re-injecting it seconds later would talk over a caller who has by then
+    // started speaking — the absolute cap alone is too loose a gate here.
+    const g = createGreetingGuard({ enabled: true });
+    g.onGreetingTriggered(T0);
+    const pastAttemptInsideAbsolute = T0 + GREETING_MAX_HOLD_MS + 1;
+    assert.ok(
+      pastAttemptInsideAbsolute < T0 + GREETING_ABSOLUTE_HOLD_CAP_MS,
+      "setup check: this instant must be past the attempt bound but inside the absolute cap"
+    );
+    assert.equal(g.onInterrupt(pastAttemptInsideAbsolute), false);
   });
 });
 

@@ -103,6 +103,22 @@ function createGreetingGuard(opts = {}) {
   }
 
   /**
+   * The greeting window is TERMINAL once either bound is reached, whatever
+   * Gemini did or did not send back. Applied at EVERY entry point, because
+   * letting the caps merely stop the hold left `armed` true for the rest of
+   * the call whenever an attempt drew no turnComplete at all — which is
+   * exactly what the logged incident shows Gemini doing. An armed guard then
+   * treats a LATER turn as the greeting: a mid-call turn ending without audio
+   * routed straight into recovery and re-sent "Call connected." into a live
+   * booking, minutes in.
+   * @param {number} now
+   */
+  function settle(now) {
+    if (!armed) return;
+    if (now - attemptStartedAt >= maxHoldMs || now - firstArmedAt >= absoluteHoldCapMs) disarm();
+  }
+
+  /**
    * The current attempt failed before the caller heard a greeting. Start
    * another attempt, or give up (loudly) if recovery is exhausted.
    * Shared by BOTH failure signals — a cancelled turn (`interrupted`) and a
@@ -146,10 +162,17 @@ function createGreetingGuard(opts = {}) {
 
     onOutputAudio(now) {
       if (!armed) return; // a later turn's audio must not re-arm the guard
+      settle(now);
+      if (!armed) return;
+      // FIRST chunk only: restamping on every chunk would keep heard-time near
+      // zero for the whole greeting, so a barge-in seconds in would read as
+      // "heard nothing" and replay the greeting over the caller.
       if (audioStartedAt === null) audioStartedAt = now;
     },
 
     onTurnComplete(now) {
+      if (!armed) return false;
+      settle(now);
       if (!armed) return false;
       if (audioStartedAt === null) {
         // The turn closed without the caller hearing a single chunk. Treating
@@ -178,24 +201,23 @@ function createGreetingGuard(opts = {}) {
       // inside both windows, so it still returns "hold".
       if (now < attemptStartedAt || now < firstArmedAt) return false;
       // Both windows must hold: the per-attempt one bounds a stuck turn, the
-      // absolute one bounds repeated re-triggers.
-      const hold = now - attemptStartedAt < maxHoldMs && now - firstArmedAt < absoluteHoldCapMs;
-      if (hold) heldFrames++;
-      return hold;
+      // absolute one bounds repeated re-triggers. settle() applies them once,
+      // here and at every other entry point, so expiry RESOLVES the greeting
+      // rather than just going quiet.
+      settle(now);
+      if (armed) heldFrames++;
+      return armed;
     },
 
     onInterrupt(now) {
       if (!enabled || !armed) return false;
 
-      // Recovery lives and dies with the greeting window. If a turn never
-      // emitted audio and never completed, `armed` would otherwise stay true
-      // for the whole call, and an interrupt minutes later still looks like
-      // "cancelled before the caller heard it" — re-injecting the greeting on
-      // top of a live conversation.
-      if (now - firstArmedAt >= absoluteHoldCapMs) {
-        disarm();
-        return false;
-      }
+      // Recovery lives and dies with the greeting window (see settle): past
+      // the caps an interrupt still looks like "cancelled before the caller
+      // heard it", and re-injecting the greeting would talk over a live
+      // conversation.
+      settle(now);
+      if (!armed) return false;
 
       const heardMs = audioStartedAt === null ? 0 : now - audioStartedAt;
       if (heardMs >= minHeardMs) {

@@ -60,6 +60,13 @@ describe("SCRUM-577: CSP allows Google Ads conversion delivery", () => {
     expect(directive("img-src")).toContain("https://www.google-analytics.com");
   });
 
+  it("img-src allows the googleadservices pixel form too", () => {
+    // .../pagead/conversion/<id>/?label=…&script=0 is the legacy image beacon.
+    // The host was in script-src and connect-src but not img-src, so the very
+    // fallback this fix exists to unblock was still blocked for that host.
+    expect(directive("img-src")).toContain("https://www.googleadservices.com");
+  });
+
   it("the policy stays a deny-by-default allowlist", () => {
     // A wildcard or a dropped default-src would 'fix' the block by disabling
     // the protection instead of allow-listing the four Google hosts.
@@ -67,7 +74,7 @@ describe("SCRUM-577: CSP allows Google Ads conversion delivery", () => {
     expect(config).toContain("object-src 'none'");
     expect(config).toContain("frame-ancestors 'none'");
 
-    // Asserted by TOKEN, not substring. The earlier version used
+    // Asserted by TOKEN, not substring. An earlier version used
     // `not.toContain("*;")` and `not.toMatch(/\s\*\s/)` — neither could ever
     // fail: directives are separate array elements in the source, so the "; "
     // separator only exists after `.join("; ")` at runtime, and a wildcard
@@ -79,5 +86,69 @@ describe("SCRUM-577: CSP allows Google Ads conversion delivery", () => {
       expect(tokens(name)).not.toContain("https:");
       expect(tokens(name)).not.toContain("http:");
     }
+  });
+});
+
+describe("SCRUM-577: the ASSEMBLED production header, not the source text", () => {
+  // Everything above reads next.config.ts as text, which can only ever see the
+  // literal source — it cannot see the isDev branch resolve, and a weakening
+  // added to a directive the text pins don't name slips straight past. Asserting
+  // the built header closes that: NODE_ENV is "test" under vitest, so isDev is
+  // false and this exercises the PRODUCTION branch specifically.
+  const directives = async (): Promise<Record<string, string[]>> => {
+    const mod = await import("../../next.config");
+    const groups = await (mod.default as { headers: () => Promise<{ headers: { key: string; value: string }[] }[]> }).headers();
+    const csp = groups[0].headers.find((h) => h.key === "Content-Security-Policy")!.value;
+    return Object.fromEntries(
+      csp.split("; ").map((d) => {
+        const [name, ...values] = d.split(" ");
+        return [name, values];
+      })
+    );
+  };
+
+  it("no directive is wildcarded or scheme-opened in production", () => {
+    return directives().then((d) => {
+      for (const name of ["default-src", "script-src", "style-src", "img-src", "connect-src", "frame-src", "media-src", "worker-src"]) {
+        expect(d[name], `${name} must exist`).toBeDefined();
+        for (const unsafe of ["*", "https:", "http:", "data:*"]) {
+          expect(d[name], `${name} must not contain ${unsafe}`).not.toContain(unsafe);
+        }
+      }
+    });
+  });
+
+  it("'unsafe-eval' never reaches production", () => {
+    // It is dev-only by an isDev ternary. Dropping that gate is invisible to
+    // any source-text assertion, and hands an attacker eval().
+    return directives().then((d) => {
+      expect(d["script-src"]).not.toContain("'unsafe-eval'");
+    });
+  });
+
+  it("script-src does not permit data: URIs", () => {
+    // `script-src data:` is a documented CSP bypass — it re-enables arbitrary
+    // script execution without naming a host.
+    return directives().then((d) => {
+      expect(d["script-src"]).not.toContain("data:");
+    });
+  });
+
+  it("the lockdown directives survive assembly", () => {
+    return directives().then((d) => {
+      expect(d["default-src"]).toEqual(["'self'"]);
+      expect(d["object-src"]).toEqual(["'none'"]);
+      expect(d["frame-ancestors"]).toEqual(["'none'"]);
+      expect(d["base-uri"]).toEqual(["'self'"]);
+      expect(d["form-action"]).toEqual(["'self'"]);
+    });
+  });
+
+  it("the Ads hosts are present in the built header, not just the source", () => {
+    return directives().then((d) => {
+      expect(d["connect-src"]).toContain("https://pagead2.googlesyndication.com");
+      expect(d["img-src"]).toContain("https://pagead2.googlesyndication.com");
+      expect(d["script-src"]).toContain("https://www.googleadservices.com");
+    });
   });
 });
