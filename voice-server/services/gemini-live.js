@@ -10,6 +10,7 @@ const WebSocket = require("ws");
 const { twilioToGemini, geminiToTwilio } = require("../lib/audio-converter");
 const { createSessionFrontend } = require("../lib/audio-frontend");
 const { TurnGate, customVadEnabled } = require("../lib/turn-gate");
+const { createGreetingGuard } = require("../lib/greeting-guard");
 
 // One-shot per process (SCRUM-556): alert the first time CUSTOM_VAD is
 // requested but can't actually run, so a fleet-wide flag that silently
@@ -181,6 +182,14 @@ function createGeminiSession(config, callbacks) {
   let intentionalCloseReason = null; // Set when we close via end_call tool
   const preSetupBuffer = []; // Buffer audio before setup completes
 
+  // SCRUM-576: room noise at pickup could cancel the greeting turn before it
+  // emitted any audio, leaving both sides waiting in silence for the rest of
+  // the call. The guard holds inbound audio while the greeting is being
+  // delivered (noise Gemini never receives cannot trigger its VAD) and
+  // re-sends the trigger if a cancel still lands before the caller heard
+  // anything. All windows are bounded — see lib/greeting-guard.js.
+  const greetingGuard = createGreetingGuard();
+
   // SCRUM-556: custom turn-taking (DARK by default — CUSTOM_VAD env flag).
   // The gate consumes per-block voice probability + RMS from the front-end
   // and drives manual activityStart/activityEnd markers with Gemini's
@@ -321,6 +330,30 @@ function createGeminiSession(config, callbacks) {
     ws.send(JSON.stringify(setupMsg));
   });
 
+  /**
+   * Ask Gemini to speak its first message.
+   * NOTE: clientContent is BLOCKED on gemini-3.1-flash-live-preview (causes
+   * 1007). realtimeInput.text is the correct way to send text on 3.1.
+   * Ref: https://ai.google.dev/api/live (realtimeInput.text field)
+   * @param {string} [reason] - "initial" or "retrigger" (SCRUM-576)
+   * @returns {boolean} whether the trigger was actually sent
+   */
+  function sendGreetingTrigger(reason = "initial") {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(JSON.stringify({
+        realtimeInput: {
+          text: "Call connected.",
+        },
+      }));
+      console.log(`[GeminiLive] Sent realtimeInput.text trigger for greeting (${reason})`);
+      return true;
+    } catch (err) {
+      console.error("[GeminiLive] Greeting trigger failed:", err.message);
+      return false;
+    }
+  }
+
   ws.on("message", async (data) => {
     let msg;
     try {
@@ -348,21 +381,15 @@ function createGeminiSession(config, callbacks) {
         }
       }
 
-      // Trigger Gemini to speak the greeting immediately.
-      // NOTE: clientContent is BLOCKED on gemini-3.1-flash-live-preview (causes 1007).
-      // Use realtimeInput.text instead — this is the correct way to send text on 3.1.
-      // Ref: https://ai.google.dev/api/live (realtimeInput.text field)
+      // Trigger Gemini to speak the greeting immediately (see
+      // sendGreetingTrigger for the realtimeInput.text protocol note).
       // Outbound caller personas disable this — they should wait for the receptionist to greet.
       if (config.triggerGreeting !== false) {
-        try {
-          ws.send(JSON.stringify({
-            realtimeInput: {
-              text: "Call connected.",
-            },
-          }));
-          console.log("[GeminiLive] Sent realtimeInput.text trigger for greeting");
-        } catch (err) {
-          console.error("[GeminiLive] Greeting trigger failed:", err.message);
+        // SCRUM-576: arm the guard ONLY on a trigger we actually sent. Arming
+        // after a failed send would hold the caller's audio waiting for a
+        // greeting that was never requested.
+        if (sendGreetingTrigger()) {
+          greetingGuard.onGreetingTriggered(Date.now());
         }
       } else {
         console.log("[GeminiLive] Greeting trigger skipped (triggerGreeting=false)");
@@ -390,6 +417,10 @@ function createGeminiSession(config, callbacks) {
           if (part.inlineData?.data) {
             try {
               const twilioAudio = geminiToTwilio(part.inlineData.data);
+              // SCRUM-576: stamped on the CONVERTED chunk — this is the first
+              // moment the caller could actually hear the greeting, which is
+              // what "did they hear it?" must be measured from.
+              greetingGuard.onOutputAudio(Date.now());
               callbacks.onAudio(twilioAudio);
             } catch (err) {
               console.error("[GeminiLive] Audio conversion error:", err.message);
@@ -413,11 +444,23 @@ function createGeminiSession(config, callbacks) {
       // Barge-in / interruption
       if (sc.interrupted) {
         console.log("[GeminiLive] User interrupted (barge-in)");
+        // Fire the callback FIRST and unconditionally: Gemini has already
+        // discarded its turn, so the queued audio must still be flushed
+        // whatever the guard decides. SCRUM-576 only adds recovery on top.
         callbacks.onInterrupted?.();
+        if (greetingGuard.onInterrupt(Date.now())) {
+          console.warn("[GeminiLive] Greeting cancelled before the caller heard it — re-sending greeting trigger");
+          if (!sendGreetingTrigger("retrigger")) {
+            // The socket died between the cancel and the retry. Nothing left to
+            // recover with, and the session teardown path owns it from here.
+            console.error("[GeminiLive] Greeting re-trigger could not be sent");
+          }
+        }
       }
 
       // Turn complete
       if (sc.turnComplete) {
+        greetingGuard.onTurnComplete(Date.now());
         callbacks.onTurnComplete?.();
         // If end_call fired during this turn, Gemini has now finished
         // streaming the closing audio. Schedule the WS close after a short
@@ -575,6 +618,12 @@ function createGeminiSession(config, callbacks) {
         if (preSetupBuffer.length < 200) preSetupBuffer.push(twilioBase64); // ~4s max buffer
         return;
       }
+      // SCRUM-576: while the greeting is being delivered, forward nothing.
+      // Room noise that never reaches Gemini cannot trip its VAD and cancel
+      // the greeting — the failure that left a caller in 17s of silence. The
+      // guard releases on turnComplete, or on its own bounded timeout, so this
+      // can never mute a caller for the rest of the call.
+      if (greetingGuard.shouldHoldInbound(Date.now())) return;
       try {
         const geminiAudio = audioFrontend
           ? audioFrontend.processTwilioFrame(twilioBase64)

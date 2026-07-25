@@ -71,6 +71,12 @@ function makeReadySession() {
   const ws = created[created.length - 1];
   ws.emit("open");
   ws.emit("message", JSON.stringify({ setupComplete: {} }));
+  // SCRUM-576: setupComplete now also fires the greeting trigger, and inbound
+  // audio is held for the duration of the greeting turn so room noise can't
+  // cancel it. Close that turn so these tests exercise a genuine MID-CALL
+  // session — which is the state they mean by "ready" — rather than a session
+  // that is still greeting.
+  ws.emit("message", JSON.stringify({ serverContent: { turnComplete: true } }));
   return { session, ws };
 }
 
