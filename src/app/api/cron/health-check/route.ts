@@ -4,7 +4,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { sendAdminAlert } from "@/lib/notifications/admin-alerts";
 
 const SERVICE_NAME = "voice-server";
-const HEALTH_TIMEOUT_MS = 10_000;
+// SCRUM-579: the voice server now scales to zero when idle, so this daily ping
+// is usually the request that wakes it. A cached-image wake takes ~6s; the first
+// wake after a deploy re-pulls the image and measured ~14s. 10s would have turned
+// a normal cold start into a false "voice server is down" admin alert, so the
+// budget covers the pull case with room to spare. A genuinely dead server still
+// fails — it just takes 30s to say so, once a day.
+const HEALTH_TIMEOUT_MS = 30_000;
 
 export async function GET(req: NextRequest) {
   const authFail = requireCronAuth(req, "health-check");
