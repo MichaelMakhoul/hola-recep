@@ -23,9 +23,9 @@ kill_timeout = "20s"
   #
   # Twilio's read timeout for call HTTP requests is hard-capped at 15s, so that
   # post-deploy wake leaves /twiml almost no budget: the call falls through to the
-  # fallback URL and the caller gets voicemail instead of the AI. ALWAYS warm the
-  # machine as the last step of a deploy (see docs/runbooks/voice-server.md):
-  #   curl -fsS --max-time 30 https://phondo-voice.fly.dev/health
+  # fallback URL and the caller gets voicemail instead of the AI. ALWAYS deploy
+  # with ./voice-server/deploy.sh, which absorbs that wake for you — never a bare
+  # `fly deploy` (see docs/runbooks/voice-server.md).
   #
   # Two surfaces wake this machine, not one: inbound Twilio calls AND the PUBLIC
   # /demo page, whose browser WebSocket to /ws/test autostarts it the same way.

@@ -23,7 +23,12 @@ fly deploy -a "$APP" "$@"
 
 echo "→ warming $APP (absorbing the post-deploy image pull)"
 start=$(date +%s)
-code=$(curl -fsS --max-time 45 -o /dev/null -w "%{http_code}" "$HEALTH_URL")
+# NOT curl -f: with set -e, -f aborts the script at this assignment, so the
+# diagnostic below never runs and the operator sees a bare `curl: (22)`. Read as
+# a failed DEPLOY, that invites a re-run — which re-pulls the image and puts the
+# machine straight back on the cold path this script exists to avoid.
+# `|| code="000"` catches DNS/connect/timeout, which have no HTTP status at all.
+code=$(curl -sS --max-time 45 -o /dev/null -w "%{http_code}" "$HEALTH_URL") || code="000"
 elapsed=$(( $(date +%s) - start ))
 echo "→ warm: HTTP $code in ${elapsed}s"
 
