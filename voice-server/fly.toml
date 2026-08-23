@@ -1,6 +1,12 @@
 app = "phondo-voice"
 primary_region = "syd"
 
+# SCRUM-579: server.js sets SHUTDOWN_GRACE_MS = 15s to drain active calls, but
+# Fly's default kill_timeout is 5s — the drain was being SIGKILLed a third of the
+# way through. That only bit on deploys while min_machines_running = 1 made
+# autostop unreachable; autostop is now routine, so give the drain room to finish.
+kill_timeout = "20s"
+
 [env]
   PORT = "3001"
   LLM_PROVIDER = "openai"
@@ -11,10 +17,18 @@ primary_region = "syd"
   force_https = true
   # SCRUM-579: scale to zero while idle. The demo warm-up (min_machines_running = 1)
   # pinned a performance-1x/2GB machine up 24/7 at ~$39/mo with no traffic. Fly's
-  # proxy autostarts the machine on the inbound Twilio webhook, so the only cost is
-  # a few seconds of cold start on the first call after an idle period.
-  # Set this back to 1 before pilot calls or a live demo so the first caller
-  # doesn't pay that cold start.
+  # proxy autostarts the machine on the inbound Twilio webhook and holds the request
+  # open while it boots. Measured wakes: ~6s with the image host-cached, but ~14.5s
+  # on the FIRST wake after a deploy (the host re-pulls the image).
+  #
+  # Twilio's read timeout for call HTTP requests is hard-capped at 15s, so that
+  # post-deploy wake leaves /twiml almost no budget: the call falls through to the
+  # fallback URL and the caller gets voicemail instead of the AI. ALWAYS warm the
+  # machine as the last step of a deploy (see docs/runbooks/voice-server.md):
+  #   curl -fsS --max-time 30 https://phondo-voice.fly.dev/health
+  #
+  # Set this back to 1 before pilot calls or a live demo (SCRUM-580) so no caller
+  # pays a cold start at all.
   auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
