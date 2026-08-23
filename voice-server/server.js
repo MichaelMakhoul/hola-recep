@@ -4756,7 +4756,11 @@ async function handleTestUserSpeech(session, ws, transcript) {
 // first audio (auth/DNS/connection + first-generation warmup); later sessions
 // are fast. A throwaway mini-turn at startup pays that cost before any caller is
 // on the line — fire-and-forget, non-blocking, ~1 cheap generation per process
-// boot. With min_machines_running=1 on Fly this runs once and the path stays warm.
+// boot. SCRUM-579: with min_machines_running=0 this now runs on EVERY autostart,
+// not once per deploy, and the first caller after an idle period races it — the
+// warm-up is fire-and-forget, so a call arriving mid-warm-up still works, it just
+// doesn't get the benefit. The post-deploy warm curl in the runbook is what
+// actually keeps a real caller off the cold path.
 function warmUpGeminiLive() {
   if (VOICE_PIPELINE !== "gemini-live" || !process.env.GEMINI_API_KEY) return;
   const t0 = Date.now();

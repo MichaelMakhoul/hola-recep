@@ -67,6 +67,17 @@ export const SENTRY_REASONS = {
    *  regression is caught, instead of the old bare console.error / silent 500. */
   CRON_SECRET_MISSING: "cron-secret-missing",
 
+  /** SCRUM-579: the health-check cron could not READ system_health, so it
+   *  skips both the down and recovery alerts for that run. With the voice
+   *  server scaling to zero, Fly no longer probes a stopped machine, so this
+   *  daily cron is the only external down-detector — a silent read failure
+   *  means nothing is watching at all. */
+  HEALTH_CHECK_STATE_READ_FAILED: "health-check-state-read-failed",
+  /** SCRUM-579: the health-check cron could not WRITE system_health. The run
+   *  looks green in Vercel's cron log while the admin dashboard keeps showing
+   *  the last successfully persisted state — stale "Healthy" forever. */
+  HEALTH_CHECK_STATE_WRITE_FAILED: "health-check-state-write-failed",
+
   // ─── paid-action route catch blocks (SCRUM-300) ─────────────────────
   // Each paid-action route used to swallow throws in its catch-all
   // with just console.error + a generic 500. These reasons tag each

@@ -175,7 +175,14 @@ export async function POST(request: Request) {
     const payload = {
       assistantId: demoConfig.assistantId,
       organizationId: DEMO_ORG_ID,
-      exp: Date.now() + 30_000,
+      // SCRUM-579: 120s, not 30s. The browser spends part of this budget on the
+      // mic-permission prompt (human thinking time) and the WS connect now also
+      // pays a Fly cold start (~6s idle, ~14.5s first wake after a deploy) since
+      // the voice server scales to zero. An expired token closes the socket with
+      // 4003, which the demo page used to render as a completed call. Single-use
+      // is enforced by jti (testSessionCaps.tryReserve) plus per-IP and global
+      // caps, so a longer window does not widen the abuse surface.
+      exp: Date.now() + 120_000,
       // SCRUM-341: unique token id for single-use enforcement at /ws/test.
       jti: crypto.randomUUID(),
     };

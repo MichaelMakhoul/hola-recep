@@ -6,6 +6,10 @@ import { isValidVoiceId } from "@/lib/security/validation";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { pageSentry } from "@/lib/observability/page-sentry";
 
+// SCRUM-579: the 30s upstream budget below only holds if the function may run
+// that long. 60s is the Hobby plan ceiling (vercel.json sets no override).
+export const maxDuration = 60;
+
 // Maximum text length to prevent abuse (Deepgram charges per character)
 const MAX_TEXT_LENGTH = 500;
 
@@ -107,6 +111,11 @@ export async function POST(request: Request) {
         "x-internal-secret": internalSecret,
       },
       body: JSON.stringify({ voiceId, text }),
+      // SCRUM-579: the voice server scales to zero, so this can pay a ~6s
+      // (post-deploy ~14.5s) cold start before synthesis even starts. Without a
+      // bound the platform kills the invocation instead, and the pageSentry
+      // discrimination below never runs — the failure becomes invisible.
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!upstream.ok) {
@@ -175,6 +184,11 @@ export async function POST(request: Request) {
     pageSentry({
       service: "next-api",
       reason: SENTRY_REASONS.VOICE_PREVIEW_FAILED,
+      // SCRUM-579: error, not the default warning. The only phondo-next warning
+      // rule filters on admin-profile-row-missing, so a warning here reaches
+      // Loki but pages nobody — including the new 30s upstream timeout, which is
+      // exactly the failure the voice server scaling to zero makes possible.
+      level: "error",
       err: error,
     });
     return NextResponse.json(

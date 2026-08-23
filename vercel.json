@@ -18,7 +18,7 @@
     },
     {
       "path": "/api/cron/health-check",
-      "schedule": "0 12 * * *"
+      "schedule": "0 22 * * *"
     },
     {
       "path": "/api/cron/keep-alive",

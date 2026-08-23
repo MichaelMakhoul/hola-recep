@@ -68,7 +68,10 @@ export async function POST(request: Request) {
     const payload = {
       assistantId,
       organizationId: membership.organization_id,
-      exp: Date.now() + 30_000, // 30 second expiry
+      // SCRUM-579: 120s — see demo-call/token. The voice server scales to zero,
+      // so the WS connect can pay a ~6s (post-deploy ~14.5s) cold start on top of
+      // the mic-permission prompt. jti single-use still bounds replay.
+      exp: Date.now() + 120_000,
       // SCRUM-341: unique token id so the voice server can enforce single-use
       // (reject a token already running a /ws/test session). Old voice-server
       // builds ignore this field — backward compatible.

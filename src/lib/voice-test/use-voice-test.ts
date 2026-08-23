@@ -295,6 +295,18 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
         if (event.code === 4029 && statusRef.current !== "error") {
           setError(event.reason || "Too many active test sessions. Please try again shortly.");
           updateStatus("error");
+        } else if (event.code === 4003 && statusRef.current !== "error") {
+          // SCRUM-579: the server closes 4003 for an invalid/expired token. This
+          // used to fall through to "ended", so an expiry rendered as a normal
+          // "Call Complete" screen with an empty transcript — a silent failure on
+          // the public demo page. Now that the voice server scales to zero, a cold
+          // start eats part of the token's life, making expiry likelier.
+          // Deliberately NOT event.reason: the server always sends "Invalid or
+          // expired token", which reads to a demo visitor as though they did
+          // something wrong. (The 4029 branch above prefers the server string
+          // because that one is written to be read by a person.)
+          setError("That session expired before it connected. Please try again.");
+          updateStatus("error");
         } else if (statusRef.current !== "ended" && statusRef.current !== "error") {
           updateStatus("ended");
         }
