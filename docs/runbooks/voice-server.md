@@ -158,8 +158,9 @@ see below for what that costs a caller.
 - **The post-deploy warm is mandatory, not a nicety** (SCRUM-579) — that is why
   it lives in `voice-server/deploy.sh` rather than as a step someone can skip. With
   `min_machines_running = 0`, the first wake after a deploy re-pulls the image onto
-  the host and measured **14.5s** (8.25s to create and start the machine, 6.4s of
-  that pulling the image, then ~4s of Node boot before the port accepts);
+  the host and measured **14.5s** of client-side wall clock: 8.25s to create and
+  start the machine (6.4s of that pulling the image), ~4s of Node boot before the
+  port accepts, and ~2s of fly-proxy wake detection plus TLS on top;
   fly-proxy even logged `could not wake up machine due to a timeout`. Twilio's read
   timeout for call HTTP requests is **hard-capped at 15s**, and fly-proxy holds the
   request open for the whole boot, so a real call landing on that first wake very
@@ -168,6 +169,9 @@ see below for what that costs a caller.
   (`src/app/api/twilio/voice-fallback/route.ts`) and a `status: "failed"` row lands
   in the business's call log. The curl absorbs that wake, leaving the image
   host-cached (~6s wakes thereafter), and doubles as a smoke test of the new image.
+  Note `deploy.sh` **stops the machine before warming it**: `fly deploy` leaves it
+  started, so curling straight after a deploy absorbs nothing — the pull lands on
+  the first wake after it later autostops, i.e. on whoever calls next.
   The same applies to the **public /demo page**: a browser opening `wss://…/ws/test`
   autostarts the machine exactly like Twilio does, so marketing visitors pay the
   same wake — see the note under "Machine autostops when idle" below.
