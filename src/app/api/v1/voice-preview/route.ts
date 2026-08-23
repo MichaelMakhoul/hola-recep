@@ -184,6 +184,11 @@ export async function POST(request: Request) {
     pageSentry({
       service: "next-api",
       reason: SENTRY_REASONS.VOICE_PREVIEW_FAILED,
+      // SCRUM-579: error, not the default warning. The only phondo-next warning
+      // rule filters on admin-profile-row-missing, so a warning here reaches
+      // Loki but pages nobody — including the new 30s upstream timeout, which is
+      // exactly the failure the voice server scaling to zero makes possible.
+      level: "error",
       err: error,
     });
     return NextResponse.json(

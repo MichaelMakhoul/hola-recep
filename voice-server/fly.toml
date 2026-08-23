@@ -27,8 +27,11 @@ kill_timeout = "20s"
   # machine as the last step of a deploy (see docs/runbooks/voice-server.md):
   #   curl -fsS --max-time 30 https://phondo-voice.fly.dev/health
   #
-  # Set this back to 1 before pilot calls or a live demo (SCRUM-580) so no caller
-  # pays a cold start at all.
+  # Two surfaces wake this machine, not one: inbound Twilio calls AND the PUBLIC
+  # /demo page, whose browser WebSocket to /ws/test autostarts it the same way.
+  # /demo is live and taking flyer-QR traffic today, so organic marketing visitors
+  # already pay a 6-15s "connecting" wait. Set this back to 1 (SCRUM-580) before
+  # the first pilot call or the next marketing push, whichever comes first.
   auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0

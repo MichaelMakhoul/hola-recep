@@ -145,12 +145,17 @@ export async function GET(req: NextRequest) {
     {
       service: SERVICE_NAME,
       healthy: isHealthy,
-      consecutiveFailures: newFailures,
+      // When the read failed, newFailures came from a `?? 0` fallback and was
+      // deliberately not persisted — reporting it would claim 1 while the row
+      // may hold 12.
+      ...(dbReadOk ? { consecutiveFailures: newFailures } : { alertingSkipped: true }),
       ...(errorMessage ? { error: errorMessage } : {}),
       ...(upsertError ? { persisted: false } : {}),
     },
     // Mirrors keep-alive: a run that could not persist its result is not a
-    // successful run, and Vercel's cron log is the only place that shows it.
-    upsertError ? { status: 503 } : undefined
+    // successful run, and neither is one that could not alert — this cron is
+    // the only external down-detector. Vercel's cron log is the only place
+    // either shows up.
+    upsertError || !dbReadOk ? { status: 503 } : undefined
   );
 }

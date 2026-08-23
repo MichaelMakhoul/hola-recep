@@ -147,15 +147,19 @@ works for any provider WS 4xx.
 ## Deploy & rollback
 
 ```bash
-cd voice-server               # fly.toml + Dockerfile live HERE; deploying from repo root FAILS
-fly deploy -a phondo-voice    # remote Docker build, ~2-4 min
+./voice-server/deploy.sh      # fly deploy (~2-4 min) THEN the mandatory warm — use this, not a bare fly deploy
 fly status -a phondo-voice    # expect state started/stopped, checks passing
-curl -fsS --max-time 30 -o /dev/null -w "%{http_code}\n" https://phondo-voice.fly.dev/health   # 200 — MANDATORY warm, see below
 ```
 
-- **The post-deploy `curl /health` is mandatory, not a nicety** (SCRUM-579). With
+Args pass through: `./voice-server/deploy.sh --strategy immediate`. A bare
+`cd voice-server && fly deploy -a phondo-voice` still works but skips the warm —
+see below for what that costs a caller.
+
+- **The post-deploy warm is mandatory, not a nicety** (SCRUM-579) — that is why
+  it lives in `voice-server/deploy.sh` rather than as a step someone can skip. With
   `min_machines_running = 0`, the first wake after a deploy re-pulls the image onto
-  the host and measured **14.5s** (6.4s pull + 8.25s machine start + ~4s Node boot);
+  the host and measured **14.5s** (8.25s to create and start the machine, 6.4s of
+  that pulling the image, then ~4s of Node boot before the port accepts);
   fly-proxy even logged `could not wake up machine due to a timeout`. Twilio's read
   timeout for call HTTP requests is **hard-capped at 15s**, and fly-proxy holds the
   request open for the whole boot, so a real call landing on that first wake very
@@ -164,6 +168,9 @@ curl -fsS --max-time 30 -o /dev/null -w "%{http_code}\n" https://phondo-voice.fl
   (`src/app/api/twilio/voice-fallback/route.ts`) and a `status: "failed"` row lands
   in the business's call log. The curl absorbs that wake, leaving the image
   host-cached (~6s wakes thereafter), and doubles as a smoke test of the new image.
+  The same applies to the **public /demo page**: a browser opening `wss://…/ws/test`
+  autostarts the machine exactly like Twilio does, so marketing visitors pay the
+  same wake — see the note under "Machine autostops when idle" below.
 
 - **Verify before dialing**: a call placed mid-deploy lands on the OLD version
   (burned two eval sessions). Confirm the boot line
@@ -180,9 +187,16 @@ curl -fsS --max-time 30 -o /dev/null -w "%{http_code}\n" https://phondo-voice.fl
   already suppresses status consequences; steady state must show
   `1 passing`). Only investigate if it repeats after boot. Eliminating the
   cold start entirely = `min_machines_running = 1` (~$39/mo for the always-on
-  performance-1x/2GB machine) — **SCRUM-580 makes that a launch gate before the
-  first pilot call**, because a caller should never pay a 6s wake, let alone the
-  post-deploy 14.5s one.
+  performance-1x/2GB machine) — **SCRUM-580 makes that a gate before the first
+  pilot call OR the next marketing push**, whichever comes first, because a
+  caller should never pay a 6s wake, let alone the post-deploy 14.5s one.
+- **The public /demo page is exposed today, not at launch.**
+  `src/app/(marketing)/demo/page.tsx` is live and taking flyer-QR traffic; its
+  browser WebSocket to `/ws/test` wakes the machine the same way an inbound call
+  does. Every organic visitor after an idle period waits 6-15s on the
+  "connecting" state. Since SCRUM-579 an expiry at least fails loudly (the demo
+  token lives 120s and close code 4003 surfaces as an error) instead of
+  rendering a blank "Call Complete", but the dead air itself remains.
 
 ## Pipeline switching & kill switches
 

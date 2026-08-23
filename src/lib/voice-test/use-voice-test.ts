@@ -301,7 +301,11 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
           // "Call Complete" screen with an empty transcript — a silent failure on
           // the public demo page. Now that the voice server scales to zero, a cold
           // start eats part of the token's life, making expiry likelier.
-          setError(event.reason || "That session expired before it connected. Please try again.");
+          // Deliberately NOT event.reason: the server always sends "Invalid or
+          // expired token", which reads to a demo visitor as though they did
+          // something wrong. (The 4029 branch above prefers the server string
+          // because that one is written to be read by a person.)
+          setError("That session expired before it connected. Please try again.");
           updateStatus("error");
         } else if (statusRef.current !== "ended" && statusRef.current !== "error") {
           updateStatus("ended");
