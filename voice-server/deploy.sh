@@ -34,7 +34,17 @@ echo "→ deploying $APP"
 fly deploy -a "$APP" "$@"
 
 echo "→ stopping $APP so the post-deploy image pull is paid here, not by a caller"
-fly machine stop -a "$APP" || echo "  (stop failed — warming anyway; the wake below may be a no-op)"
+# Explicit IDs: `fly machine stop` with no ids falls back to interactive
+# selection, which has no TTY in CI — it would fail every run, and the `||` below
+# would swallow it. `-w 30s` waits out the transition so the warm can't catch a
+# half-stopped machine.
+ids=$(fly machines list -a "$APP" -q 2>/dev/null || true)
+if [ -n "$ids" ]; then
+  # shellcheck disable=SC2086 -- word splitting is what we want; one arg per id
+  fly machine stop -a "$APP" -w 30s $ids || echo "  (stop failed — warming anyway; see the check after the warm)"
+else
+  echo "  (could not list machines — warming anyway; see the check after the warm)"
+fi
 
 echo "→ warming $APP via $HEALTH_URL"
 start=$(date +%s)
@@ -54,4 +64,32 @@ if [ "$code" != "200" ]; then
   exit 1
 fi
 
-echo "✓ deployed and warm (${elapsed}s wake absorbed). Confirm the boot line: fly logs -a $APP"
+# Gate the success claim on the measured wake. An absorbed wake is ~6s cached or
+# ~14.5s with a pull; a warm against an already-running machine returns in ~80ms.
+# If the stop didn't take effect — for any reason, including a future flyctl
+# change or Fly pulling at deploy time instead — the ✓ below would otherwise
+# assert an absorption that never happened, and the exit code would agree.
+if [ "$elapsed" -lt 3 ]; then
+  echo "⚠ warm returned in ${elapsed}s — the machine was already running, so NO wake was absorbed." >&2
+  echo "  The stop above did not take effect. The next caller after an autostop pays the pull." >&2
+  echo "  Do it by hand:" >&2
+  echo "    fly machine stop -a $APP -w 30s \$(fly machines list -a $APP -q)" >&2
+  echo "    curl -sS --max-time 60 -o /dev/null -w '%{http_code}\\n' $HEALTH_URL" >&2
+  # Exit 0 deliberately: the deploy succeeded. Only the warm-up is unverified.
+  exit 0
+fi
+
+# 3-10s means a real wake happened, but off the host's cached image — so the
+# ~14.5s image-pull wake was NOT reproduced here. That is the one premise in this
+# script nobody has proven: a stop should not evict the image, so the pull
+# measured on 2026-08-23 may have come from a host migration or a Fly GC, neither
+# of which a stop reproduces. If so the expensive wake is still ahead, on a
+# caller. Report it rather than let the ✓ imply otherwise.
+if [ "$elapsed" -lt 10 ]; then
+  echo "⚠ warm took ${elapsed}s — that is a CACHED wake (~6s), not a pull (~14.5s)." >&2
+  echo "  A stop does not normally evict the image, so the pull was probably not" >&2
+  echo "  absorbed here and may still land on a caller. Deploy is fine; see SCRUM-579." >&2
+  exit 0
+fi
+
+echo "✓ deployed and warm (${elapsed}s — a pull-sized wake, absorbed here). Confirm the boot line: fly logs -a $APP"

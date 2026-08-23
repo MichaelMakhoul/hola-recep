@@ -169,9 +169,10 @@ see below for what that costs a caller.
   (`src/app/api/twilio/voice-fallback/route.ts`) and a `status: "failed"` row lands
   in the business's call log. The curl absorbs that wake, leaving the image
   host-cached (~6s wakes thereafter), and doubles as a smoke test of the new image.
-  Note `deploy.sh` **stops the machine before warming it**: `fly deploy` leaves it
-  started, so curling straight after a deploy absorbs nothing — the pull lands on
-  the first wake after it later autostops, i.e. on whoever calls next.
+  **The stop is load-bearing**: `fly deploy` leaves the machine started, so curling
+  straight after a deploy would absorb nothing — the pull would land on the first
+  wake after it later autostops, i.e. on whoever calls next. The script reports
+  which happened: a wake under 10s was cached, so the pull was not absorbed.
   The same applies to the **public /demo page**: a browser opening `wss://…/ws/test`
   autostarts the machine exactly like Twilio does, so marketing visitors pay the
   same wake — see the note under "Machine autostops when idle" below.
